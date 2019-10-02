@@ -66,7 +66,7 @@ class (Monad m, Monad (STM m)) => MonadSTM m where
   readTVar     :: TVar m a -> STM m a
   writeTVar    :: TVar m a -> a -> STM m ()
   retry        :: STM m a
---orElse       :: STM m a -> STM m a -> STM m a --TODO
+  orElse       :: STM m a -> STM m a -> STM m a
 
   -- Helpful derived functions with default implementations
   newTVarM     :: a -> m (TVar m a)
@@ -124,6 +124,7 @@ instance MonadSTM m => MonadSTM (ReaderT e m) where
   readTVar         = lift . readTVar
   writeTVar t a    = lift $ writeTVar t a
   retry            = lift retry
+  orElse a b       = ReaderT $ \e -> runReaderT a e `orElse` runReaderT b e
 
   newTMVar         = lift . newTMVar
   newTMVarM        = lift . newTMVarM
@@ -163,6 +164,7 @@ instance (Show e, MonadSTM m) => MonadSTM (ExceptT e m) where
   readTVar               = lift . readTVar
   writeTVar t a          = lift $ writeTVar t a
   retry                  = lift retry
+  orElse a b             = ExceptT $ runExceptT a `orElse` runExceptT b
 
   newTMVar               = lift . newTMVar
   newTMVarM              = lift . newTMVarM
@@ -204,6 +206,7 @@ instance MonadSTM IO where
   readTVar    = STM.readTVar
   writeTVar   = STM.writeTVar
   retry       = STM.retry
+  orElse      = STM.orElse
 
   newTVarM    = STM.newTVarIO
   modifyTVar  = STM.modifyTVar
