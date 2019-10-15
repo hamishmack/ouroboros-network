@@ -11,6 +11,7 @@ module Ouroboros.Consensus.Mempool.TxSeq (
   , TxTicket(..)
   , TxSeq(Empty, (:>), (:<))
   , fromTxSeq
+  , txTickets
   , lookupByTicketNo
   , splitAfterTicketNo
   , splitAfterSlotNo
@@ -183,4 +184,8 @@ splitAfterSlotNo (TxSeq txs) n =
 fromTxSeq :: TxSeq tx -> [(tx, TicketNo)]
 fromTxSeq (TxSeq ftree) = fmap
   (\(TxTicket tx tn _sno) -> (tx, tn))
-  (Foldable.toList $ ftree)
+  (Foldable.toList ftree)
+
+-- | Convert a 'TxSeq' to a list of 'TxTicket's.
+txTickets :: TxSeq tx -> [TxTicket tx]
+txTickets (TxSeq ftree) = Foldable.toList ftree
