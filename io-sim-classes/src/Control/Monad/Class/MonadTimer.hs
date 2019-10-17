@@ -143,10 +143,8 @@ instance MonadTimer IO where
       mgr <- GHC.getSystemTimerManager
       GHC.unregisterTimeout mgr key
 
-  threadDelay d = IO.threadDelay (diffTimeToMicrosecondsAsInt d)
-
-  registerDelay = STM.registerDelay . diffTimeToMicrosecondsAsInt
 #else
+
 instance Eq (Timeout IO) where
   TimeoutIO _ cancelvar == TimeoutIO _ cancelvar' = cancelvar == cancelvar'
 
@@ -175,11 +173,11 @@ instance MonadTimer IO where
     STM.atomically $ do
       fired <- STM.readTVar =<< STM.readTVar timeoutvarvar
       when (not fired) $ STM.writeTVar cancelvar True
+#endif
 
   threadDelay d = IO.threadDelay (diffTimeToMicrosecondsAsInt d)
 
   registerDelay = STM.registerDelay . diffTimeToMicrosecondsAsInt
-#endif
 
 diffTimeToMicrosecondsAsInt :: DiffTime -> Int
 diffTimeToMicrosecondsAsInt d =
@@ -189,6 +187,16 @@ diffTimeToMicrosecondsAsInt d =
     -- systems means 2^31 usec, which is only ~35 minutes.
     assert (usec <= fromIntegral (maxBound :: Int)) $
     fromIntegral usec
+
+{-
+diffTimeToMicrosecondsAsInt' :: DiffTime -> (Int, Int)
+diffTimeToMicrosecondsAsInt' d =
+    let usec :: Integer
+        usec = diffTimeToPicoseconds d `div` 1000000 in
+    -- Can only represent usec times that fit within an Int, which on 32bit
+    -- systems means 2^31 usec, which is only ~35 minutes.
+    divMod usec (fromIntegral (maxBound :: Int))
+-}
 
 {-------------------------------------------------------------------------------
   Timeout an action

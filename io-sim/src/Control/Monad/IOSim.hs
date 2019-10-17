@@ -60,7 +60,8 @@ import           Control.Exception
                    , ErrorCall(..), throw, assert )
 import qualified System.IO.Error as IO.Error (userError)
 
-import           Control.Monad (when)
+import           Control.Applicative (Applicative(..), Alternative(..))
+import           Control.Monad (MonadPlus, when)
 import           Control.Monad.ST.Lazy
 import qualified Control.Monad.ST.Strict as StrictST
 import           Data.STRef.Lazy
@@ -189,6 +190,10 @@ instance Applicative (STM s) where
     {-# INLINE (*>) #-}
     (*>) = \dm dn -> STM $ \k -> unSTM dm (\_ -> unSTM dn k)
 
+instance Alternative (STM s) where
+    empty = retry
+    (<|>) = orElse
+
 instance Monad (STM s) where
     return = pure
 
@@ -199,6 +204,8 @@ instance Monad (STM s) where
     (>>) = (*>)
 
     fail = MonadFail.fail
+
+instance MonadPlus (STM s)
 
 instance MonadFail (SimM s) where
   fail msg = SimM $ \_ -> Throw (toException (IO.Error.userError msg))

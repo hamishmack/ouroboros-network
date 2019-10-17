@@ -57,6 +57,7 @@ library
                        Ouroboros.Network.NodeToNode
                        Ouroboros.Network.NodeToClient
                        Ouroboros.Network.Point
+                       Ouroboros.Network.PeerSelection
                        Ouroboros.Network.Server.ConnectionTable
                        Ouroboros.Network.Server.Socket
                        Ouroboros.Network.Server.Version.CBOR
@@ -122,6 +123,8 @@ library
                        typed-protocols-cbor
                                          >=0.1 && <1.0,
                        io-sim-classes    >=0.1 && < 0.2,
+                       -- temp, for examples, do not commit:
+                       io-sim,
 
                        contra-tracer,
                        cardano-prelude,
