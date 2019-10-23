@@ -158,6 +158,10 @@ class ( Show (ChainState    p)
                     -> AnchoredFragment hdr -> AnchoredFragment hdr -> Ordering
 
   -- | Check if a node is the leader
+  --
+  -- The 'LedgerView' and 'ChainState' passed to 'checkIsLeader' are the ledger
+  -- view and chain state for the /currently adopted chain/ (and must therefore
+  -- be consistent with each other).
   checkIsLeader :: (HasNodeState p m, MonadRandom m)
                 => NodeConfig p
                 -> SlotNo
