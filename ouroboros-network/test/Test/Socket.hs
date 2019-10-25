@@ -11,12 +11,11 @@
 {-# OPTIONS_GHC -Wno-orphans     #-}
 module Test.Socket (tests) where
 
-import           Control.Concurrent (ThreadId)
 import           Control.Exception (IOException)
 import           Control.Monad
 import           Control.Monad.Class.MonadAsync
-import           Control.Monad.Class.MonadFork hiding (ThreadId)
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadFork
+import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadThrow
 import           Control.Monad.Class.MonadTimer
 import qualified Data.ByteString.Lazy as BL
@@ -268,7 +267,7 @@ prop_socket_send_recv initiatorAddr responderAddr f xs = do
     return (res == mapAccumL f 0 xs)
 
   where
-    waitSibling :: StrictTVar IO Int -> IO ()
+    waitSibling :: TVar IO Int -> IO ()
     waitSibling cntVar = do
         atomically $ modifyTVar cntVar (\a -> a - 1)
         atomically $ do
@@ -450,9 +449,9 @@ demo chain0 updates = do
 
     -- A simple chain-sync client which runs until it recieves an update to
     -- a given point (either as a roll forward or as a roll backward).
-    consumerClient :: StrictTMVar IO Bool
+    consumerClient :: TMVar IO Bool
                    -> Point block
-                   -> StrictTVar IO (Chain block)
+                   -> TVar IO (Chain block)
                    -> ChainSync.Client block (ExampleTip block) IO ()
     consumerClient done target chain =
       ChainSync.Client
@@ -473,7 +472,7 @@ demo chain0 updates = do
 
 data WithThreadAndTime a = WithThreadAndTime {
       wtatOccuredAt    :: !UTCTime
-    , wtatWithinThread :: !ThreadId
+    , wtatWithinThread :: !(ThreadId IO)
     , wtatEvent        :: !a
     }
 

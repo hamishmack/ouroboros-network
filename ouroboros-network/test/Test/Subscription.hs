@@ -17,7 +17,7 @@ import           Control.Concurrent hiding (threadDelay)
 import           Control.Monad (replicateM, unless, when)
 import           Control.Monad.Class.MonadAsync
 import           Control.Monad.Class.MonadSay
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadThrow
 import           Control.Monad.Class.MonadTime
 import           Control.Monad.Class.MonadTimer
@@ -147,7 +147,7 @@ mockResolver lr = Resolver lA lAAAA
         threadDelay (lrIpv6Delay lr)
         return $ lrIpv6Result lr
 
-mockResolverIO :: StrictTMVar IO ()
+mockResolverIO :: TMVar IO ()
                -> M.Map (Socket.Family, Word16) Socket.PortNumber
                -> LookupResultIO
                -> Resolver IO
@@ -459,7 +459,7 @@ prop_sub_io lr = ioProperty $ do
                  permCheck (r4 ++ r6) (map snd observerdConnectionOrder)
 
     initiatorCallback
-        :: StrictTVar IO Int
+        :: TVar IO Int
         -> Socket.Socket
         -> IO ()
     initiatorCallback clientCountVar _ =
@@ -467,7 +467,7 @@ prop_sub_io lr = ioProperty $ do
             clientsLeft <- readTVar clientCountVar
             case clientsLeft of
                  0 -> retry
-                 _ -> modifyTVar clientCountVar (\a -> a - 1)
+                 _ -> modifyTVar' clientCountVar (\a -> a - 1)
 
 
     spawnServer serverCountVar serverPortMapVar traceVar stopVar (sid, addr) =
@@ -478,9 +478,9 @@ prop_sub_io lr = ioProperty $ do
                 Socket.setSocketOption sd Socket.ReuseAddr 1
                 Socket.bind sd (Socket.addrAddress addr)
                 localPort <- Socket.socketPort sd
-                atomically $ modifyTVar serverPortMapVar (M.insert sid localPort)
+                atomically $ modifyTVar' serverPortMapVar (M.insert sid localPort)
                 Socket.listen sd 10
-                atomically $ modifyTVar serverCountVar (\a -> a - 1)
+                atomically $ modifyTVar' serverCountVar (\a -> a - 1)
                 bracket
                     (Socket.accept sd)
                     (\(sd',_) -> Socket.close sd')
@@ -594,12 +594,12 @@ prop_send_recv f xs first = ioProperty $ do
 
 data ReqRspCfg = ReqRspCfg {
       rrcTag         :: !String
-    , rrcServerVar   :: !(StrictTMVar IO Int)
-    , rrcClientVar   :: !(StrictTMVar IO [Int])
-    , rrcSiblingVar  :: !(StrictTVar IO Int)
+    , rrcServerVar   :: !(TMVar IO Int)
+    , rrcClientVar   :: !(TMVar IO [Int])
+    , rrcSiblingVar  :: !(TVar IO Int)
 }
 
-newReqRspCfg :: String -> StrictTVar IO Int -> IO ReqRspCfg
+newReqRspCfg :: String -> TVar IO Int -> IO ReqRspCfg
 newReqRspCfg tag siblingVar = do
     sv <- newEmptyTMVarM
     cv <- newEmptyTMVarM
@@ -721,17 +721,17 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
           atomically $ (,) <$> takeTMVar (rrcServerVar rrcfg)
                            <*> takeTMVar (rrcClientVar rrcfg)
 
-waitSiblingSub :: StrictTVar IO Int -> IO ()
+waitSiblingSub :: TVar IO Int -> IO ()
 waitSiblingSub cntVar = do
-    atomically $ modifyTVar cntVar (\a -> a - 1)
+    atomically $ modifyTVar' cntVar (\a -> a - 1)
     waitSibling cntVar
 
-waitSiblingSTM :: StrictTVar IO Int -> STM IO ()
+waitSiblingSTM :: TVar IO Int -> STM IO ()
 waitSiblingSTM cntVar = do
     cnt <- readTVar cntVar
     unless (cnt == 0) retry
 
-waitSibling :: StrictTVar IO Int -> IO ()
+waitSibling :: TVar IO Int -> IO ()
 waitSibling = atomically . waitSiblingSTM
 
 {-

@@ -37,7 +37,7 @@ module Ouroboros.Network.NodeToClient (
   ) where
 
 import           Control.Concurrent.Async (Async)
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSTM
 import qualified Data.ByteString.Lazy as BL
 import           Data.Text (Text)
 import qualified Data.Text as T

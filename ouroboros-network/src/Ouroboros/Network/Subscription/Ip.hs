@@ -1,5 +1,4 @@
 {-# LANGUAGE BangPatterns        #-}
-{-# LANGUAGE CPP                 #-}
 {-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE NamedFieldPuns      #-}
 {-# LANGUAGE RankNTypes          #-}
@@ -19,7 +18,7 @@ module Ouroboros.Network.Subscription.Ip
  - RFC8305, https://tools.ietf.org/html/rfc8305 .
  -}
 
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSTM
 import           Control.Tracer
 import           Data.Time.Clock (DiffTime)
 import qualified Network.Socket as Socket

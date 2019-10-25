@@ -50,7 +50,7 @@ import qualified Network.Socket as Socket
 
 import           Control.Monad.Class.MonadAsync
 import           Control.Monad.Class.MonadFork
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadTime
 import           Control.Monad.Class.MonadTimer
 import           Control.Monad.Class.MonadThrow
@@ -132,12 +132,12 @@ newResultQ = atomically $ newTQueue
 --                           returned.  It will receive the result of the
 --                           application or an exception raised by it.
 --
-type StateVar m s = StrictTVar m s
+type StateVar m s = TVar m s
 
 -- | The set of all spawned threads. Used for waiting or cancelling them when
 -- the server shuts down.
 --
-type ThreadsVar m = StrictTVar m (Set (Async m ()))
+type ThreadsVar m = TVar m (Set (Async m ()))
 
 
 data SocketState m addr
@@ -346,7 +346,7 @@ subscriptionLoop
                                     )
                      }
     -- a single run through @sTarget :: SubcriptionTarget m addr@.
-    innerLoop :: StrictTVar m (Set (Async m ()))
+    innerLoop :: TVar m (Set (Async m ()))
               -> ValencyCounter m
               -> SubscriptionTarget m addr
               -> m ()
@@ -376,7 +376,7 @@ subscriptionLoop
         Just (remoteAddr, sTargetNext) ->
           innerStep conThreads valencyVar remoteAddr sTargetNext
 
-    innerStep :: StrictTVar m (Set (Async m ()))
+    innerStep :: TVar m (Set (Async m ()))
               -- ^ outstanding connection threads; threads are removed as soon
               -- as the connection succeeds.  They are all cancelled when
               -- valency drops to 0.  The asynchronous exception which cancels
@@ -417,8 +417,8 @@ subscriptionLoop
                       (do
                         traceWith tr $ SubscriptionTraceAllocateSocket remoteAddr
                         atomically $ do
-                          modifyTVar conThreads (Set.insert thread)
-                          modifyTVar threadsVar (Set.insert thread)
+                          modifyTVar' conThreads (Set.insert thread)
+                          modifyTVar' threadsVar (Set.insert thread)
                           readTVar sVar
                             >>= socketStateChangeTx (CreatedSocket remoteAddr thread)
                             >>= (writeTVar sVar $!))
@@ -426,7 +426,7 @@ subscriptionLoop
                         atomically $ do
                           -- The thread is removed from 'conThreads'
                           -- inside 'connAction'.
-                          modifyTVar threadsVar (Set.delete thread)
+                          modifyTVar' threadsVar (Set.delete thread)
                           readTVar sVar
                             >>= socketStateChangeTx (ClosedSocket remoteAddr thread)
                             >>= (writeTVar sVar $!)
@@ -452,7 +452,7 @@ subscriptionLoop
     -- This function runs with asynchronous exceptions masked.
     --
     connAction :: Async m ()
-               -> StrictTVar m (Set (Async m ()))
+               -> TVar m (Set (Async m ()))
                -> ValencyCounter m
                -> addr
                -> (forall x. m x -> m x) -- unmask exceptions
@@ -468,7 +468,7 @@ subscriptionLoop
           traceWith tr $ SubscriptionTraceConnectException remoteAddr e
           atomically $ do
             -- remove thread from active connections threads
-            modifyTVar conThreads (Set.delete thread)
+            modifyTVar' conThreads (Set.delete thread)
             (!s, m) <- readTVar sVar >>= completeApplicationTx (ConnectionError t remoteAddr e)
             writeTVar sVar s
             writeTQueue resQ (Act m)
@@ -478,7 +478,7 @@ subscriptionLoop
           connRes <- atomically $ do
             -- we successfully connected, remove the thread from
             -- outstanding connection threads.
-            modifyTVar conThreads (Set.delete thread)
+            modifyTVar' conThreads (Set.delete thread)
 
             v <- readValencyCounter valencyVar
             if v > 0

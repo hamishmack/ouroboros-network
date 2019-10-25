@@ -18,7 +18,7 @@ import           Control.Monad.Class.MonadAsync
 import           Control.Monad.Class.MonadFork
 import           Control.Monad.Class.MonadSay
 import           Control.Monad.Class.MonadST
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadThrow
 import           Control.Tracer (nullTracer)
 
@@ -95,7 +95,7 @@ tests = testGroup "Ouroboros.Network.Protocol.ChainSyncProtocol"
 --
 testClient
   :: MonadSTM m
-  => StrictTVar m Bool
+  => TVar m Bool
   -> Point Block
   -> ChainSyncExamples.Client Block blockInfo m ()
 testClient doneVar tip =
@@ -184,7 +184,7 @@ chainSyncPipelinedForkExperiment
   => (forall a b. ChainSyncServer Block (ExampleTip Block) m a
       -> ChainSyncClientPipelined Block (ExampleTip Block) m b
       -> m ())
-  -> (forall a. StrictTVar m (Chain Block)
+  -> (forall a. TVar m (Chain Block)
       -> Client Block (ExampleTip Block) m a
       -> ChainSyncClientPipelined Block (ExampleTip Block) m a)
   -> ChainProducerStateForkTest
@@ -483,7 +483,7 @@ chainSyncDemoPipelined
      )
   => Channel m ByteString
   -> Channel m ByteString
-  -> (forall a. StrictTVar m (Chain Block)
+  -> (forall a. TVar m (Chain Block)
       -> Client Block (ExampleTip Block) m a
       -> ChainSyncClientPipelined Block (ExampleTip Block) m a)
   -> ChainProducerStateForkTest

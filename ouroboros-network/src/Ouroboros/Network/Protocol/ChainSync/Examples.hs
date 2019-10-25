@@ -19,7 +19,7 @@ module Ouroboros.Network.Protocol.ChainSync.Examples (
   ) where
 
 import           Codec.Serialise (Serialise)
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSTM
 import           GHC.Generics (Generic)
 
 import           Cardano.Prelude (NoUnexpectedThunks)
@@ -42,7 +42,7 @@ data Client header tip m t = Client
   }
 
 -- | A client which doesn't do anything and never ends. Used with
--- 'chainSyncClientExample', the StrictTVar m (Chain header) will be updated but
+-- 'chainSyncClientExample', the TVar m (Chain header) will be updated but
 -- nothing further will happen.
 pureClient :: Applicative m => Client header tip m void
 pureClient = Client
@@ -52,14 +52,14 @@ pureClient = Client
   }
 
 -- | An instance of the client side of the chain sync protocol that
--- consumes into a 'Chain' stored in a 'StrictTVar'.
+-- consumes into a 'Chain' stored in a 'TVar'.
 --
 -- This is of course only useful in tests and reference implementations since
 -- this is not a realistic chain representation.
 --
 chainSyncClientExample :: forall header tip m a.
                           (HasHeader header, MonadSTM m)
-                       => StrictTVar m (Chain header)
+                       => TVar m (Chain header)
                        -> Client header tip m a
                        -> ChainSyncClient header tip m a
 chainSyncClientExample chainvar client = ChainSyncClient $
@@ -145,7 +145,7 @@ data ExampleTip blk = ExampleTip {
 deriving instance Serialise (HeaderHash blk) => Serialise (ExampleTip blk)
 
 -- | An instance of the server side of the chain sync protocol that reads from
--- a pure 'ChainProducerState' stored in a 'StrictTVar'.
+-- a pure 'ChainProducerState' stored in a 'TVar'.
 --
 -- This is of course only useful in tests and reference implementations since
 -- this is not a realistic chain representation.
@@ -156,7 +156,7 @@ chainSyncServerExample :: forall blk header m a.
                           , HeaderHash header ~ HeaderHash blk
                           )
                        => a
-                       -> StrictTVar m (ChainProducerState header)
+                       -> TVar m (ChainProducerState header)
                        -> ChainSyncServer header (ExampleTip blk) m a
 chainSyncServerExample recvMsgDoneClient chainvar = ChainSyncServer $
     idle <$> newReader
@@ -203,7 +203,7 @@ chainSyncServerExample recvMsgDoneClient chainvar = ChainSyncServer $
     newReader :: m ReaderId
     newReader = atomically $ do
       cps <- readTVar chainvar
-      let (cps', rid) = ChainProducerState.initReader genesisPoint cps
+      let (!cps', rid) = ChainProducerState.initReader genesisPoint cps
       writeTVar chainvar cps'
       return rid
 
@@ -235,7 +235,7 @@ chainSyncServerExample recvMsgDoneClient chainvar = ChainSyncServer $
         cps <- readTVar chainvar
         case ChainProducerState.readerInstruction rid cps of
           Nothing -> return Nothing
-          Just (u, cps') -> do
+          Just (u, !cps') -> do
             writeTVar chainvar cps'
             let chain = ChainProducerState.chainState cps'
             return $ Just ( castPoint (Chain.headPoint chain)
@@ -249,7 +249,7 @@ chainSyncServerExample recvMsgDoneClient chainvar = ChainSyncServer $
         cps <- readTVar chainvar
         case ChainProducerState.readerInstruction rid cps of
           Nothing        -> retry
-          Just (u, cps') -> do
+          Just (u, !cps') -> do
             writeTVar chainvar cps'
             let chain = ChainProducerState.chainState cps'
             return ( castPoint (Chain.headPoint chain)
