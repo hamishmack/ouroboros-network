@@ -36,7 +36,7 @@ import           Control.Monad.Class.MonadSTM as X hiding (TMVar, TVar,
                      isEmptyTMVar, modifyTVar, newEmptyTMVar, newEmptyTMVarM,
                      newTMVar, newTMVarM, newTVar, newTVarM, putTMVar,
                      readTMVar, readTVar, swapTMVar, takeTMVar, tryPutTMVar,
-                     tryReadTMVar, tryTakeTMVar, updateTVar, writeTVar)
+                     tryReadTMVar, tryTakeTMVar, writeTVar)
 import qualified Control.Monad.Class.MonadSTM as Lazy
 import           GHC.Stack
 
