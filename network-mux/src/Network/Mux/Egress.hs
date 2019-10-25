@@ -11,7 +11,7 @@ module Network.Mux.Egress (
 import           Control.Monad
 import qualified Data.ByteString.Lazy as BL
 
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSTM
 
 import           Network.Mux.Types
 
@@ -106,7 +106,7 @@ import           Network.Mux.Types
 -- that each active demand gets a `maxSDU`s work of data processed
 -- each time it gets to the front of the queue
 mux :: (MonadSTM m)
-     => StrictTVar m Int
+     => TVar m Int
      -> PerMuxSharedState ptcl m
      -> m ()
 mux cnt pmss = go
@@ -125,7 +125,7 @@ processSingleWanton :: MonadSTM m
                     -> MiniProtocolId ptcl
                     -> MiniProtocolMode
                     -> Wanton m
-                    -> StrictTVar m Int
+                    -> TVar m Int
                     -> m ()
 processSingleWanton pmss mpi md wanton cnt = do
     maxSDU <- sduSize $ bearer pmss
@@ -140,10 +140,10 @@ processSingleWanton pmss mpi md wanton cnt = do
         -- must be inside the same STM transaction.
         do putTMVar (want wanton) rest
            writeTBQueue (tsrQueue pmss) (TLSRDemand mpi md wanton)
-           modifyTVar cnt (+ 1)
+           modifyTVar' cnt (+ 1)
       -- return data to send
       pure frag
     let sdu = MuxSDU (RemoteClockModel 0) mpi md (fromIntegral $ BL.length blob) blob
     void $ write (bearer pmss) sdu
-    atomically $ modifyTVar cnt (\a -> a - 1)
+    atomically $ modifyTVar' cnt (\a -> a - 1)
     --paceTransmission tNow

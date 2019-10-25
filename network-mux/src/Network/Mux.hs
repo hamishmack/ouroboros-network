@@ -23,7 +23,7 @@ module Network.Mux (
 import           Control.Monad
 import           Control.Monad.Class.MonadAsync
 import           Control.Monad.Class.MonadSay
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadThrow
 import           Control.Tracer
 import           Data.Array
@@ -138,7 +138,7 @@ muxStart tracer peerid app bearer = do
 
 
     mpsJob
-      :: StrictTVar m Int
+      :: TVar m Int
       -> PerMuxSharedState ptcl m
       -> ptcl
       -> m [(m (), String)]
@@ -174,7 +174,7 @@ muxStart tracer peerid app bearer = do
     -- threads will be prevented from exiting until all SDUs have been
     -- transmitted unless an exception/error is encounter. In that case all
     -- jobs will be cancelled directly.
-    mpsJobExit :: StrictTVar m Int -> m ()
+    mpsJobExit :: TVar m Int -> m ()
     mpsJobExit cnt = do
         muxBearerSetState tracer bearer Dying
         atomically $ do
@@ -211,7 +211,7 @@ muxChannel
     -> PerMuxSharedState ptcl m
     -> MiniProtocolId ptcl
     -> MiniProtocolMode
-    -> StrictTVar m Int
+    -> TVar m Int
     -> m (Channel m)
 muxChannel tracer pmss mid md cnt = do
     w <- newEmptyTMVarM
@@ -232,7 +232,9 @@ muxChannel tracer pmss mid md cnt = do
                 (printf "Attempting to send a message of size %d on %s %s" (BL.length encoding)
                         (show mid) (show $ md))
                 callStack
-        atomically $ modifyTVar cnt (+ 1)
+        atomically $ modifyTVar' cnt (+ 1)
+        --TODO: decide if this needs to be strict. It is not now because it is
+        -- a lazy ByteString.
         atomically $ putTMVar w encoding
         traceWith tracer $ MuxTraceChannelSendStart mid encoding
         atomically $ writeTBQueue (tsrQueue pmss) (TLSRDemand mid md want)
@@ -258,7 +260,7 @@ muxBearerSetState :: (MonadSTM m, Ord ptcl, Enum ptcl, Bounded ptcl)
                   -> MuxBearer ptcl m
                   -> MuxBearerState
                   -> m ()
-muxBearerSetState tracer bearer newState = do
+muxBearerSetState tracer bearer !newState = do
     oldState <- atomically $ do
         -- TODO: reimplement with swapTVar once it is added to MonadSTM
         old <- readTVar (state bearer)
