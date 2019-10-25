@@ -32,7 +32,7 @@ module Control.Monad.Class.MonadSTM.Strict
   , checkInvariant
   ) where
 
-import           Control.Monad.Class.MonadSTM as X hiding (LazyTMVar, LazyTVar,
+import           Control.Monad.Class.MonadSTM as X hiding (TMVar, TVar,
                      isEmptyTMVar, modifyTVar, newEmptyTMVar, newEmptyTMVarM,
                      newTMVar, newTMVarM, newTVar, newTVarM, putTMVar,
                      readTMVar, readTVar, swapTMVar, takeTMVar, tryPutTMVar,
@@ -47,14 +47,14 @@ import           GHC.Stack
 data StrictTVar m a = StrictTVar
    { invariant :: !(a -> Maybe String)
      -- ^ Invariant checked whenever updating the 'StrictTVar'.
-   , tvar      :: !(Lazy.LazyTVar m a)
+   , tvar      :: !(Lazy.TVar m a)
    }
 
 -- | Get the underlying @TVar@
 --
 -- Since we obviously cannot guarantee that updates to this 'LazyTVar' will be
 -- strict, this should be used with caution.
-toLazyTVar :: StrictTVar m a -> Lazy.LazyTVar m a
+toLazyTVar :: StrictTVar m a -> Lazy.TVar m a
 toLazyTVar StrictTVar { tvar } = tvar
 
 newTVar :: MonadSTM m => a -> STM m (StrictTVar m a)
@@ -98,7 +98,7 @@ updateTVar v f = do
 -- Does not support an invariant: if the invariant would not be satisfied,
 -- we would not be able to put a value into an empty TMVar, which would lead
 -- to very hard to debug bugs where code is blocked indefinitely.
-newtype StrictTMVar m a = StrictTMVar (Lazy.LazyTMVar m a)
+newtype StrictTMVar m a = StrictTMVar (Lazy.TMVar m a)
 
 newTMVar :: MonadSTM m => a -> STM m (StrictTMVar m a)
 newTMVar !a = StrictTMVar <$> Lazy.newTMVar a
