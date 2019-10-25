@@ -5,7 +5,6 @@
 {-# LANGUAGE TypeFamilyDependencies #-}
 module Control.Monad.Class.MonadSTM
   ( MonadSTM (..)
-  , Tr
 
   -- * Default 'TMVar' implementation
   , TMVarDefault (..)
@@ -54,8 +53,6 @@ import           Control.Monad.Reader
 import           GHC.Stack
 import           Numeric.Natural (Natural)
 
-{-# DEPRECATED Tr "Now simply called 'STM'" #-}
-type Tr m = STM m
 
 class (Monad m, Monad (STM m)) => MonadSTM m where
 
