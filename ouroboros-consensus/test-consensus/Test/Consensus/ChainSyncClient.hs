@@ -24,6 +24,7 @@ import           Test.Tasty
 import           Test.Tasty.QuickCheck
 
 import           Control.Monad.Class.MonadThrow
+import qualified Control.Monad.Class.MonadSTM as STM.Lazy
 import           Control.Monad.IOSim (runSimOrThrow)
 
 import           Network.TypedProtocol.Channel
@@ -300,7 +301,7 @@ runChainSync securityParam maxClockSkew (ClientUpdates clientUpdates)
                    chainDbView
 
     -- Set up the server
-    varChainProducerState <- uncheckedNewTVarM $ initChainProducerState Genesis
+    varChainProducerState <- STM.Lazy.newTVarM $ initChainProducerState Genesis
     let server :: ChainSyncServer (Header TestBlock) (ExampleTip TestBlock) m ()
         server = chainSyncServerExample () varChainProducerState
 
@@ -322,12 +323,12 @@ runChainSync securityParam maxClockSkew (ClientUpdates clientUpdates)
         -- Server
         whenJust (Map.lookup slot serverUpdates) $ \chainUpdates ->
           atomically $ do
-            chainProducerState <- readTVar varChainProducerState
+            chainProducerState <- STM.Lazy.readTVar varChainProducerState
             case CPS.applyChainUpdates
                    (map (fmap TestHeader) (toChainUpdates chainUpdates))
                    chainProducerState of
               Just chainProducerState' ->
-                writeTVar varChainProducerState chainProducerState'
+                STM.Lazy.writeTVar varChainProducerState chainProducerState'
               Nothing                  ->
                 error $ "Invalid chainUpdates: " <> show chainUpdates <>
                         " for " <> show (chainState chainProducerState)
@@ -375,7 +376,7 @@ runChainSync securityParam maxClockSkew (ClientUpdates clientUpdates)
     -- Collect the return values
     atomically $ do
       clientChain       <- fst <$> readTVar varClientState
-      serverChain       <- chainState <$> readTVar varChainProducerState
+      serverChain       <- chainState <$> STM.Lazy.readTVar varChainProducerState
       candidateFragment <- readTVar varFinalCandidates >>= readTVar . (Map.! serverId)
       clientException   <- readTVar varClientException
       return (

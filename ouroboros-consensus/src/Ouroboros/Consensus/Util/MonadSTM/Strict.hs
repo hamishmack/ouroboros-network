@@ -2,7 +2,7 @@
 {-# LANGUAGE CPP                   #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns        #-}
-module Control.Monad.Class.MonadSTM.Strict
+module Ouroboros.Consensus.Util.MonadSTM.Strict
   ( module X
     -- * 'StrictTVar'
   , StrictTVar
@@ -52,7 +52,7 @@ data StrictTVar m a = StrictTVar
 
 -- | Get the underlying @TVar@
 --
--- Since we obviously cannot guarantee that updates to this 'LazyTVar' will be
+-- Since we obviously cannot guarantee that updates to this 'Lazy.TVar' will be
 -- strict, this should be used with caution.
 toLazyTVar :: StrictTVar m a -> Lazy.TVar m a
 toLazyTVar StrictTVar { tvar } = tvar
