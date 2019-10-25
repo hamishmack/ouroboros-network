@@ -25,7 +25,7 @@ import           Control.Monad (unless)
 import           Control.Monad.IOSim
 import           Control.Monad.Class.MonadAsync
 import           Control.Monad.Class.MonadFork
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadThrow
 import           Control.Monad.Class.MonadTimer
 import           Control.Tracer (Tracer(Tracer), contramap, nullTracer)
@@ -549,10 +549,10 @@ _unit_bracketSyncWithFetchClient step = do
           sync  = withSyncTestAction $ \body ->
                     bracketSyncWithFetchClient registry peer $
                       bracket_
-                        (atomically (modifyTVar fetchStatePeerChainsVar
-                                                (Map.insert peer ())))
-                        (atomically (modifyTVar fetchStatePeerChainsVar
-                                                (Map.delete peer)))
+                        (atomically (modifyTVar' fetchStatePeerChainsVar
+                                                 (Map.insert peer ())))
+                        (atomically (modifyTVar' fetchStatePeerChainsVar
+                                                 (Map.delete peer)))
                         body
 
           logic :: (Map String (PeerFetchStatus BlockHeader), Map String ())

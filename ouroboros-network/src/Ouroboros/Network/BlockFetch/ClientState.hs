@@ -32,7 +32,7 @@ import           Data.Set (Set)
 import           Data.Semigroup (Semigroup, Last(..))
 
 import           Control.Monad (when)
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSTM
 import           Control.Exception (assert)
 import           Control.Tracer (Tracer, traceWith)
 
@@ -84,14 +84,14 @@ data FetchClientStateVars m header =
        -- thread. Changes in this state trigger re-evaluation of fetch
        -- decisions.
        --
-       fetchClientStatusVar   :: StrictTVar m (PeerFetchStatus header),
+       fetchClientStatusVar   :: TVar m (PeerFetchStatus header),
 
        -- | The current number of requests in-flight and the amount of data
        -- in-flight with the peer. It is written by the protocol thread and
        -- read by the decision logic thread. This is used in fetch decisions
        -- but changes here do not trigger re-evaluation of fetch decisions.
        --
-       fetchClientInFlightVar :: StrictTVar m (PeerFetchInFlight header),
+       fetchClientInFlightVar :: TVar m (PeerFetchInFlight header),
 
        -- | The shared variable used to communicate fetch requests to the thread
        -- running the block fetch protocol. Fetch requests are posted by the
@@ -613,12 +613,12 @@ rejectedFetchBatch tracer blockFetchSize inflightlimits range headers
 --
 updateCurrentStatus :: (MonadSTM m, HasHeader header)
                     => (PeerFetchInFlight header -> PeerFetchStatus header)
-                    -> StrictTVar m (PeerFetchStatus header)
+                    -> TVar m (PeerFetchStatus header)
                     -> PeerFetchInFlight header
                     -> STM m (PeerFetchStatus header)
 updateCurrentStatus decideCurrentStatus fetchClientStatusVar inflight = do
 
-    let currentStatus' = decideCurrentStatus inflight
+    let !currentStatus' = decideCurrentStatus inflight
 
     -- Only update the variable if it changed, to avoid spurious wakeups.
     currentStatus <- readTVar fetchClientStatusVar
@@ -710,7 +710,7 @@ takeTFetchRequestVar v = (\(r,g,l) -> (r, getLast g, getLast l))
 -- This is used much like a 'TMVar' as a one-place queue between threads but
 -- with the property that we can \"improve\" the current value (if any).
 --
-newtype TMergeVar m a = TMergeVar (StrictTMVar m a)
+newtype TMergeVar m a = TMergeVar (TMVar m a)
 
 newTMergeVar :: MonadSTM m => STM m (TMergeVar m a)
 newTMergeVar = TMergeVar <$> newEmptyTMVar

@@ -16,7 +16,7 @@ import           Codec.Serialise (Serialise (..))
 import           Control.Monad.Class.MonadAsync
 import           Control.Monad.Class.MonadSay
 import           Control.Monad.Class.MonadST
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadThrow
 import           Control.Monad.Class.MonadTime
 import           Control.Monad.Class.MonadTimer
@@ -158,9 +158,9 @@ demo chain0 updates delay = do
 
     -- A simple chain-sync client which runs until it recieves an update to
     -- a given point (either as a roll forward or as a roll backward).
-    consumerClient :: StrictTMVar m Bool
+    consumerClient :: TMVar m Bool
                    -> Point block
-                   -> StrictTVar m (Chain block)
+                   -> TVar m (Chain block)
                    -> ChainSync.Client block (ExampleTip block) m ()
     consumerClient done target chain =
       ChainSync.Client

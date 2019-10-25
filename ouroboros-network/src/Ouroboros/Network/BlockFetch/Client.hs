@@ -18,7 +18,7 @@ module Ouroboros.Network.BlockFetch.Client (
   ) where
 
 import           Control.Monad (unless)
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadThrow
 import           Control.Monad.Class.MonadTime
 import           Control.Exception (assert)
