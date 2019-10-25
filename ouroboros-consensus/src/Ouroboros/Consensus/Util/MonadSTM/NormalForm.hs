@@ -1,5 +1,5 @@
 module Ouroboros.Consensus.Util.MonadSTM.NormalForm (
-    module Control.Monad.Class.MonadSTM.Strict
+    module Ouroboros.Consensus.Util.MonadSTM.Strict
   , module Ouroboros.Consensus.Util.MonadSTM.StrictMVar
   , newTVarM
   , newMVar
@@ -21,14 +21,14 @@ import           Cardano.Prelude (ClosureTreeOptions (..),
                      TraverseCyclicClosures (..), TreeDepth (..),
                      buildAndRenderClosureTree)
 
-import           Control.Monad.Class.MonadSTM.Strict hiding (newEmptyTMVarM,
+import           Ouroboros.Consensus.Util.MonadSTM.Strict hiding (newEmptyTMVarM,
                      newTMVar, newTMVarM, newTVar, newTVarM,
                      newTVarWithInvariantM)
 import           Ouroboros.Consensus.Util.MonadSTM.StrictMVar hiding
                      (newEmptyMVar, newEmptyMVarWithInvariant, newMVar,
                      newMVarWithInvariant)
 
-import qualified Control.Monad.Class.MonadSTM.Strict as Strict
+import qualified Ouroboros.Consensus.Util.MonadSTM.Strict as Strict
 import qualified Ouroboros.Consensus.Util.MonadSTM.StrictMVar as Strict
 
 {-------------------------------------------------------------------------------

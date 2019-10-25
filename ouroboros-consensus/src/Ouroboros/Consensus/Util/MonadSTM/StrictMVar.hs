@@ -24,7 +24,7 @@ import           Control.Concurrent.STM (readTVarIO)
 import           Control.Monad (when)
 import           Control.Monad.Class.MonadSTM (MonadSTM (..))
 import qualified Control.Monad.Class.MonadSTM as Lazy
-import           Control.Monad.Class.MonadSTM.Strict (checkInvariant)
+import           Ouroboros.Consensus.Util.MonadSTM.Strict (checkInvariant)
 import           GHC.Stack
 
 import           Cardano.Prelude (NoUnexpectedThunks (..))

@@ -17,6 +17,11 @@ source-repository head
   type:     git
   location: https://github.com/input-output-hk/ouroboros-network
 
+flag checktvarinvariant
+  Description: Enable runtime invariant checks on StrictT(M)Var
+  Manual: True
+  Default: False
+
 library
   hs-source-dirs:      src
 
@@ -91,6 +96,7 @@ library
                        Ouroboros.Consensus.Util.HList
                        Ouroboros.Consensus.Util.IOLike
                        Ouroboros.Consensus.Util.MonadSTM.NormalForm
+                       Ouroboros.Consensus.Util.MonadSTM.Strict
                        Ouroboros.Consensus.Util.MonadSTM.StrictMVar
                        Ouroboros.Consensus.Util.Orphans
                        Ouroboros.Consensus.Util.Random
@@ -233,6 +239,9 @@ library
   ghc-options:         -Wall
                        -Wno-unticked-promoted-constructors
                        -fno-ignore-asserts
+
+  if flag(checktvarinvariant)
+    cpp-options: -DCHECK_TVAR_INVARIANT
 
 test-suite test-consensus
   type:             exitcode-stdio-1.0
