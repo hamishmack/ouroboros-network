@@ -10,15 +10,9 @@ module Control.Monad.Class.MonadFork
 
 import qualified Control.Concurrent as IO
 import qualified GHC.Conc.Sync as IO (labelThread)
-import           Control.Exception (Exception(..), SomeException)
+import           Control.Exception (Exception)
 import           Control.Monad.Reader
-import           System.IO (hFlush, hPutStrLn, stderr)
-import           System.IO.Unsafe (unsafePerformIO)
 
-
-forkPrintExceptionLock :: IO.MVar ()
-{-# NOINLINE forkPrintExceptionLock #-}
-forkPrintExceptionLock = unsafePerformIO $ IO.newMVar ()
 
 class (Monad m, Eq   (ThreadId m),
                 Ord  (ThreadId m),
@@ -43,17 +37,7 @@ instance MonadThread IO where
   labelThread = IO.labelThread
 
 instance MonadFork IO where
-  fork a =
-    let handleException :: Either SomeException () -> IO ()
-        handleException (Left e) = do
-            tid <- IO.myThreadId
-            IO.withMVar forkPrintExceptionLock $ \() -> do
-              hPutStrLn stderr $ "Uncaught exception in thread " ++ show tid
-                              ++ ": " ++ displayException e
-              hFlush stderr
-        handleException (Right x) = return x
-    in IO.forkFinally a handleException
-
+  fork           = IO.forkIO
   forkWithUnmask = IO.forkIOWithUnmask
   throwTo        = IO.throwTo
 
