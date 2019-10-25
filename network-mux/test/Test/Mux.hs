@@ -38,7 +38,7 @@ import qualified System.Random.SplitMix as SM
 import           Control.Monad.Class.MonadAsync
 import           Control.Monad.Class.MonadSay
 import           Control.Monad.Class.MonadST
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadThrow
 import           Control.Monad.Class.MonadTime
 import           Control.Monad.Class.MonadTimer
@@ -359,9 +359,9 @@ prop_mux_snd_recv messages = ioProperty $ do
 -- side and a MiniProtocolDescription for the server side for a RequestResponce
 -- protocol.
 --
-setupMiniReqRsp :: IO ()              -- | Action performed by responder before processing the response
-                -> StrictTVar IO Int  -- | Total number of miniprotocols.
-                -> DummyTrace         -- | Trace of messages
+setupMiniReqRsp :: IO ()        -- ^ Action performed by responder before processing the response
+                -> TVar IO Int  -- ^ Total number of miniprotocols.
+                -> DummyTrace   -- ^ Trace of messages
                 -> IO ( IO Bool
                       , Mx.Channel IO -> IO ()
                       , Mx.Channel IO -> IO ()
@@ -402,7 +402,7 @@ setupMiniReqRsp serverAction mpsEndVar (DummyTrace msgs) = do
         go resps []         = SendMsgDone (pure $ reverse resps == responses)
         go resps (req:reqs) = SendMsgReq req $ \resp -> return (go (resp:resps) reqs)
 
-    clientApp :: StrictTMVar IO Bool
+    clientApp :: TMVar IO Bool
               -> Mx.Channel IO
               -> IO ()
     clientApp clientResultVar clientChan = do
@@ -410,7 +410,7 @@ setupMiniReqRsp serverAction mpsEndVar (DummyTrace msgs) = do
         atomically (putTMVar clientResultVar result)
         end
 
-    serverApp :: StrictTMVar IO Bool
+    serverApp :: TMVar IO Bool
               -> Mx.Channel IO
               -> IO ()
     serverApp serverResultVar serverChan = do
@@ -425,7 +425,7 @@ setupMiniReqRsp serverAction mpsEndVar (DummyTrace msgs) = do
             c <- readTVar mpsEndVar
             unless (c == 0) retry
 
-waitOnAllClients :: StrictTVar IO Int
+waitOnAllClients :: TVar IO Int
                  -> Int
                  -> IO ()
 waitOnAllClients clientVar clientTot = do

@@ -17,7 +17,7 @@ import           GHC.Stack
 import           Text.Printf
 
 import           Control.Monad.Class.MonadSay
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadThrow
 
 import           Network.Mux.Types
@@ -85,7 +85,9 @@ demux pmss = forever $ do
         let q = ingressQueue (dispatchTable pmss) (msId sdu) (negMiniProtocolMode $ msMode sdu)
         buf <- readTVar q
         if BL.length buf + BL.length (msBlob sdu) <= maximumIngressQueue (msId sdu)
-            then writeTVar q $ BL.append buf (msBlob sdu)
+                 --TODO: decide if this needs to be strict. It is not now
+                 -- because it is a lazy ByteString.
+            then writeTVar q $! BL.append buf (msBlob sdu)
             else throwM $ MuxError MuxIngressQueueOverRun
                               (printf "Ingress Queue overrun on %s %s"
                                (show $ msId sdu) (show $ msMode sdu))
@@ -96,7 +98,7 @@ ingressQueue :: (MonadSTM m, Ord ptcl, Enum ptcl)
              => MiniProtocolDispatch ptcl m
              -> MiniProtocolId ptcl
              -> MiniProtocolMode
-             -> StrictTVar m BL.ByteString
+             -> TVar m BL.ByteString
 ingressQueue (MiniProtocolDispatch tbl) dis mode =
     tbl ! (dis, mode)
     -- We can use array indexing here, because we constructed the dispatch
