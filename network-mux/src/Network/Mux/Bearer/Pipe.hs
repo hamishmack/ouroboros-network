@@ -98,9 +98,10 @@ runMuxWithPipes
     -> Mx.MuxApplication appType peerid ptcl IO a b
     -> Handle -- ^ read handle
     -> Handle -- ^ write handle
+    -> ((ptcl -> Mx.MiniProtocolInitiatorControl IO a) -> (ptcl -> Mx.MiniProtocolResponderControl IO b) -> IO ())
     -> IO ()
-runMuxWithPipes tracer peerid app pcRead pcWrite = do
+runMuxWithPipes tracer peerid app pcRead pcWrite k = do
     let muxTracer = Mx.WithMuxBearer "Pipe" `contramap` tracer
     bearer <- pipeAsMuxBearer muxTracer pcRead pcWrite
-    Mx.muxStart muxTracer peerid app bearer
+    Mx.muxStart muxTracer peerid app bearer k
 

@@ -75,7 +75,7 @@ smallMiniProtocolLimit = 16*1024
 
 activeTracer :: forall m a. (MonadSay m, Show a) => Tracer m a
 activeTracer = nullTracer
---activeTracer = showTracing sayTracer
+--activeTracer = showTracing _sayTracer
 
 _sayTracer :: MonadSay m => Tracer m String
 _sayTracer = Tracer say
@@ -334,20 +334,35 @@ prop_mux_snd_recv messages = ioProperty $ do
 
     client_w <- atomically $ newTBQueue 10
     client_r <- atomically $ newTBQueue 10
-    endMpsVar <- atomically $ newTVar 2
+    serverResultVar <- newEmptyTMVarM
+    clientResultVar <- newEmptyTMVarM
 
     let server_w = client_r
         server_r = client_w
 
-    (verify, clientApp, serverApp) <- setupMiniReqRsp
-                                        (return ()) endMpsVar messages
+        clientK ctrlFn _ = do
+            let (Mx.MiniProtocolInitiatorControl release) = ctrlFn ReqResp1
+            result <- atomically $ release
+
+            (r, _ ) <- atomically $ result
+            atomically $ putTMVar clientResultVar r
+
+        serverK _ rspFn = do
+            let (Mx.MiniProtocolResponderControl result) = rspFn ReqResp1
+
+            r <- atomically $ result
+            atomically $ putTMVar serverResultVar r
+
+        verify = atomically $ (&&) <$> takeTMVar serverResultVar <*> takeTMVar clientResultVar
+
+    (clientApp, serverApp) <- setupMiniReqRsp (return ()) messages
 
     clientAsync <-
       async $ Mx.runMuxWithQueues activeTracer "client" (Mx.MuxInitiatorApplication
-        $ \_ ReqResp1 -> clientApp) client_w client_r sduLen Nothing
+        $ \_ ReqResp1 -> clientApp) client_w client_r sduLen Nothing clientK
     serverAsync <-
-      async $ Mx.runMuxWithQueues activeTracer "server" (Mx.MuxResponderApplication
-        $ \_ ReqResp1 -> serverApp) server_w server_r sduLen Nothing
+      async $ Mx.runMuxWithQueues nullTracer "server" (Mx.MuxResponderApplication
+        $ \_ ReqResp1 -> serverApp) server_w server_r sduLen Nothing serverK
 
     r <- waitBoth clientAsync serverAsync
     case r of
@@ -360,26 +375,17 @@ prop_mux_snd_recv messages = ioProperty $ do
 -- protocol.
 --
 setupMiniReqRsp :: IO ()              -- | Action performed by responder before processing the response
-                -> StrictTVar IO Int  -- | Total number of miniprotocols.
                 -> DummyTrace         -- | Trace of messages
-                -> IO ( IO Bool
-                      , Mx.Channel IO -> IO ()
-                      , Mx.Channel IO -> IO ()
+                -> IO ( Mx.Channel IO -> IO Bool
+                      , Mx.Channel IO -> IO Bool
                       )
-setupMiniReqRsp serverAction mpsEndVar (DummyTrace msgs) = do
-    serverResultVar <- newEmptyTMVarM
-    clientResultVar <- newEmptyTMVarM
-
-    return ( verifyCallback serverResultVar clientResultVar
-           , clientApp clientResultVar
-           , serverApp serverResultVar
+setupMiniReqRsp serverAction (DummyTrace msgs) = do
+    return ( clientApp
+           , serverApp
            )
   where
     requests  = map fst msgs
     responses = map snd msgs
-
-    verifyCallback serverResultVar clientResultVar =
-        atomically $ (&&) <$> takeTMVar serverResultVar <*> takeTMVar clientResultVar
 
     reqRespServer :: [DummyPayload]
                   -> ReqRespServer DummyPayload DummyPayload IO Bool
@@ -402,28 +408,13 @@ setupMiniReqRsp serverAction mpsEndVar (DummyTrace msgs) = do
         go resps []         = SendMsgDone (pure $ reverse resps == responses)
         go resps (req:reqs) = SendMsgReq req $ \resp -> return (go (resp:resps) reqs)
 
-    clientApp :: StrictTMVar IO Bool
-              -> Mx.Channel IO
-              -> IO ()
-    clientApp clientResultVar clientChan = do
-        result <- runClient nullTracer clientChan (reqRespClient requests)
-        atomically (putTMVar clientResultVar result)
-        end
+    clientApp :: Mx.Channel IO
+              -> IO Bool
+    clientApp clientChan = runClient activeTracer clientChan (reqRespClient requests)
 
-    serverApp :: StrictTMVar IO Bool
-              -> Mx.Channel IO
-              -> IO ()
-    serverApp serverResultVar serverChan = do
-        result <- runServer nullTracer serverChan (reqRespServer responses)
-        atomically (putTMVar serverResultVar result)
-        end
-
-    -- Wait on all miniprotocol jobs before letting a miniprotocol thread exit.
-    end = do
-        atomically $ modifyTVar mpsEndVar (\a -> a - 1)
-        atomically $ do
-            c <- readTVar mpsEndVar
-            unless (c == 0) retry
+    serverApp :: Mx.Channel IO
+              -> IO Bool
+    serverApp serverChan = runServer activeTracer serverChan (reqRespServer responses)
 
 waitOnAllClients :: StrictTVar IO Int
                  -> Int
@@ -445,15 +436,14 @@ prop_mux_2_minis msgTrace0 msgTrace1 = ioProperty $ do
 
     client_w <- atomically $ newTBQueue 10
     client_r <- atomically $ newTBQueue 10
-    endMpsVar <- atomically $ newTVar 4 -- Two initiators and two responders.
+    serverResultVar <- newEmptyTMVarM
+    clientResultVar <- newEmptyTMVarM
 
     let server_w = client_r
         server_r = client_w
 
-    (verify_0, client_mp0, server_mp0) <-
-        setupMiniReqRsp (return ()) endMpsVar msgTrace0
-    (verify_1, client_mp1, server_mp1) <-
-        setupMiniReqRsp (return ()) endMpsVar msgTrace1
+    (client_mp0, server_mp0) <- setupMiniReqRsp (return ()) msgTrace0
+    (client_mp1, server_mp1) <- setupMiniReqRsp (return ()) msgTrace1
 
     let clientApp _ ReqResp2 = client_mp0
         clientApp _ ReqResp3 = client_mp1
@@ -461,19 +451,38 @@ prop_mux_2_minis msgTrace0 msgTrace1 = ioProperty $ do
         serverApp _ ReqResp2 = server_mp0
         serverApp _ ReqResp3 = server_mp1
 
-    clientAsync <- async $ Mx.runMuxWithQueues activeTracer "client" (Mx.MuxInitiatorApplication clientApp) client_w client_r sduLen Nothing
-    serverAsync <- async $ Mx.runMuxWithQueues activeTracer "server" (Mx.MuxResponderApplication serverApp) server_w server_r sduLen Nothing
+        clientK ctrlFn _ = do
+            let (Mx.MiniProtocolInitiatorControl release2) = ctrlFn ReqResp2
+                (Mx.MiniProtocolInitiatorControl release3) = ctrlFn ReqResp3
 
+            (result2, result3) <- atomically $ (,) <$> release2 <*> release3
+
+            atomically $ do
+                (r2, _ ) <- result2
+                (r3, _ ) <- result3
+                putTMVar clientResultVar $ r2 && r3
+
+        serverK _ rspFn = do
+            let (Mx.MiniProtocolResponderControl result2) = rspFn ReqResp2
+                (Mx.MiniProtocolResponderControl result3) = rspFn ReqResp3
+
+            atomically $ do
+                r2 <- result2
+                r3 <- result3
+                putTMVar serverResultVar $ r2 && r3
+
+        verify = atomically $ (&&) <$> takeTMVar serverResultVar <*> takeTMVar clientResultVar
+
+    clientAsync <- async $ Mx.runMuxWithQueues activeTracer "client" (Mx.MuxInitiatorApplication clientApp) client_w client_r sduLen
+                             Nothing clientK
+    serverAsync <- async $ Mx.runMuxWithQueues activeTracer "server" (Mx.MuxResponderApplication serverApp) server_w server_r sduLen
+                             Nothing serverK
 
     r <- waitBoth clientAsync serverAsync
     case r of
          (Just _, _) -> return $ property False
          (_, Just _) -> return $ property False
-         _           -> do
-             res0 <- verify_0
-             res1 <- verify_1
-
-             return $ property $ res0 .&&. res1
+         _           -> property <$> verify
 
 -- | Attempt to verify that capacity is diveded fairly between two active
 -- miniprotocols.  Two initiators send a request over two different
@@ -492,20 +501,20 @@ prop_mux_starvation (Uneven response0 response1) =
     client_w <- atomically $ newTBQueue 10
     client_r <- atomically $ newTBQueue 10
     activeMpsVar <- atomically $ newTVar 0
-    -- 2 active initiators and 2 active responders
-    endMpsVar <- atomically $ newTVar 4
     -- At most track 100 packets per test run
     traceQueueVar <- atomically $ newTBQueue 100
+    serverResultVar <- newEmptyTMVarM
+    clientResultVar <- newEmptyTMVarM
 
     let server_w = client_r
         server_r = client_w
 
-    (verify_short, client_short, server_short) <-
+    (client_short, server_short) <-
         setupMiniReqRsp (waitOnAllClients activeMpsVar 2)
-                        endMpsVar  $ DummyTrace [(request, response0)]
-    (verify_long, client_long, server_long) <-
+                        $ DummyTrace [(request, response0)]
+    (client_long, server_long) <-
         setupMiniReqRsp (waitOnAllClients activeMpsVar 2)
-                        endMpsVar $ DummyTrace [(request, response1)]
+                        $ DummyTrace [(request, response1)]
 
     let clientApp _ ReqResp2 = client_short
         clientApp _ ReqResp3 = client_long
@@ -513,8 +522,32 @@ prop_mux_starvation (Uneven response0 response1) =
         serverApp _ ReqResp2 = server_short
         serverApp _ ReqResp3 = server_long
 
-    clientAsync <- async $ Mx.runMuxWithQueues activeTracer "client" (Mx.MuxInitiatorApplication clientApp) client_w client_r sduLen (Just traceQueueVar)
-    serverAsync <- async $ Mx.runMuxWithQueues activeTracer "server" (Mx.MuxResponderApplication serverApp) server_w server_r sduLen Nothing
+        clientK ctrlFn _ = do
+            let (Mx.MiniProtocolInitiatorControl release2) = ctrlFn ReqResp2
+                (Mx.MiniProtocolInitiatorControl release3) = ctrlFn ReqResp3
+
+            (result2, result3) <- atomically $ (,) <$> release2 <*> release3
+
+            atomically $ do
+                (r2, _ ) <- result2
+                (r3, _ ) <- result3
+                putTMVar clientResultVar $ r2 && r3
+
+        serverK _ rspFn = do
+            let (Mx.MiniProtocolResponderControl result2) = rspFn ReqResp2
+                (Mx.MiniProtocolResponderControl result3) = rspFn ReqResp3
+
+            atomically $ do
+                r2 <- result2
+                r3 <- result3
+                putTMVar serverResultVar $ r2 && r3
+
+        verify = atomically $ (&&) <$> takeTMVar serverResultVar <*> takeTMVar clientResultVar
+
+    clientAsync <- async $ Mx.runMuxWithQueues activeTracer "client" (Mx.MuxInitiatorApplication clientApp) client_w client_r sduLen
+                             (Just traceQueueVar) clientK
+    serverAsync <- async $ Mx.runMuxWithQueues activeTracer "server" (Mx.MuxResponderApplication serverApp) server_w server_r sduLen
+                             Nothing serverK
 
     -- First verify that all messages where received correctly
     r <- waitBoth clientAsync serverAsync
@@ -523,15 +556,14 @@ prop_mux_starvation (Uneven response0 response1) =
          (_, Just _) -> return $ property False
          _           -> do
              -- First verify that all messages where received correctly
-             res_short <- verify_short
-             res_long <- verify_long
+             res <- verify
 
              -- Then look at the message trace to check for starvation.
              trace <- atomically $ flushTBQueue traceQueueVar []
              let es = map (\(e, _, _) -> e) trace
                  ls = dropWhile (\e -> e == head es) es
                  fair = verifyStarvation ls
-             return $ res_short .&&. res_long .&&. fair
+             return $ res .&&. fair
   where
    -- We can't make 100% sure that both servers start responding at the same
    -- time but once they are both up and running messages should alternate
@@ -603,20 +635,20 @@ prop_demux_sdu a = do
   where
     run (ArbitraryValidSDU sdu state (Just Mx.MuxIngressQueueOverRun)) = do
         stopVar <- newEmptyTMVarM
+        doneVar <- newEmptyTMVarM
 
         -- To trigger MuxIngressQueueOverRun we use a special test protocol
         -- with an ingress queue which is less than 0xffff so that it can be
         -- triggered by a single segment.
-        let server_mps = Mx.MuxResponderApplication (\_ ReqRespSmall -> serverRsp stopVar)
+        let server_mps = Mx.MuxResponderApplication (\_ ReqRespSmall -> serverRsp stopVar doneVar)
 
-        (client_w, said) <- plainServer server_mps
+        (client_w, said) <- plainServer ReqRespSmall server_mps
         setup state client_w
 
         writeSdu client_w $! unDummyPayload sdu
 
         atomically $! putTMVar stopVar $ unDummyPayload sdu
-
-        res <- wait said
+        res <- waitForServerRsp said doneVar
         case res of
             Just e  ->
                 case fromException e of
@@ -626,17 +658,18 @@ prop_demux_sdu a = do
 
     run (ArbitraryValidSDU sdu state err_m) = do
         stopVar <- newEmptyTMVarM
+        doneVar <- newEmptyTMVarM
 
-        let server_mps = Mx.MuxResponderApplication (\_ ReqResp1 -> serverRsp stopVar)
+        let server_mps = Mx.MuxResponderApplication (\_ ReqResp1 -> serverRsp stopVar doneVar)
 
-        (client_w, said) <- plainServer server_mps
+        (client_w, said) <- plainServer ReqResp1 server_mps
 
         setup state client_w
 
         atomically $! putTMVar stopVar $! unDummyPayload sdu
         writeSdu client_w $ unDummyPayload sdu
 
-        res <- wait said
+        res <- waitForServerRsp said doneVar
         case res of
             Just e  ->
                 case fromException e of
@@ -648,16 +681,17 @@ prop_demux_sdu a = do
 
     run (ArbitraryInvalidSDU badSdu state err) = do
         stopVar <- newEmptyTMVarM
+        doneVar <- newEmptyTMVarM
 
-        let server_mps = Mx.MuxResponderApplication (\_ ReqResp1 -> serverRsp stopVar)
+        let server_mps = Mx.MuxResponderApplication (\_ ReqResp1 -> serverRsp stopVar doneVar)
 
-        (client_w, said) <- plainServer server_mps
+        (client_w, said) <- plainServer ReqResp1 server_mps
 
         setup state client_w
         atomically $ writeTBQueue client_w $ BL.take (isRealLength badSdu) $ encodeInvalidMuxSDU badSdu
         atomically $ putTMVar stopVar $ BL.replicate (fromIntegral $ isLength badSdu) 0xa
 
-        res <- wait said
+        res <- waitForServerRsp said doneVar
         case res of
             Just e  ->
                 case fromException e of
@@ -665,20 +699,38 @@ prop_demux_sdu a = do
                     Nothing -> return $ property False
             Nothing -> return $ property False
 
-    plainServer server_mps = do
+    plainServer ptcl server_mps = do
         server_w <- atomically $ newTBQueue 10
         server_r <- atomically $ newTBQueue 10
 
         said <- async $ Mx.runMuxWithQueues activeTracer "server" server_mps server_w server_r 1280 Nothing
+                        $ \_ rspFn -> do
+                          let (Mx.MiniProtocolResponderControl result) = rspFn ptcl
+                          void $ atomically $ result
+                          return ()
 
         return (server_r, said)
 
+    -- Wait on either the Async said or the TMVar doneVar.
+    waitForServerRsp said doneVar = do
+        res <- atomically $ do
+            r <- pollSTM said
+            d <- tryTakeTMVar doneVar
+            case (r, d) of
+                 (Just e, _)  -> case e of
+                                      Left e' -> return $ Just e'
+                                      Right e' -> return e'
+                 (_, Just _)  -> return Nothing
+                 (_, _)       -> retry
+        cancel said
+        return res
+
     -- Server that expects to receive a specific ByteString.
     -- Doesn't send a reply.
-    serverRsp stopVar chan =
+    serverRsp stopVar doneVar chan =
         atomically (takeTMVar stopVar) >>= loop
       where
-        loop e | e == BL.empty = return ()
+        loop e | e == BL.empty = atomically $ putTMVar doneVar ()
         loop e = do
             msg_m <- Mx.recv chan
             case msg_m of

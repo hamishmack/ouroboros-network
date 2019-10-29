@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns        #-}
+{-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE NamedFieldPuns      #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE RankNTypes          #-}
@@ -10,6 +11,8 @@ module Network.Mux (
       muxStart
     , muxBearerSetState
     , MuxSDU (..)
+    , MiniProtocolInitiatorControl (..)
+    , MiniProtocolResponderControl (..)
     , MiniProtocolLimits (..)
     , ProtocolEnum (..)
     , MiniProtocolId (..)
@@ -95,19 +98,23 @@ muxStart
     -> peerid
     -> MuxApplication appType peerid ptcl m a b
     -> MuxBearer ptcl m
+    -> ((ptcl -> MiniProtocolInitiatorControl m a) -> (ptcl -> MiniProtocolResponderControl m b) -> m ())
     -> m ()
-muxStart tracer peerid app bearer = do
+muxStart tracer peerid app bearer k = do
     tbl <- setupTbl
     tq <- atomically $ newTBQueue 100
     cnt <- newTVarM 0
+    itbl <- setupInitiatorCtrlTbl
+    rtbl <- setupResponderCtrlTbl
 
     let pmss = PerMuxSS tbl tq bearer
         jobs = [ (demux pmss, "Demuxer")
                , (mux cnt pmss, "Muxer")
                , (muxControl pmss ModeResponder, "MuxControl Responder")
                , (muxControl pmss ModeInitiator, "MuxControl Initiator")
+               , (k (mpsInitiatorCtrl itbl) (mpsResponderCtrl rtbl) >> muxExit cnt, "Continuation")
                ]
-    mjobs <- sequence [ mpsJob cnt pmss ptcl
+    mjobs <- sequence [ mpsJob cnt pmss itbl rtbl ptcl
                       | ptcl <- [minBound..maxBound] ]
 
     mask $ \unmask -> do
@@ -136,13 +143,57 @@ muxStart tracer peerid app bearer = do
                         | ptcl <- [minBound..maxBound]
                         , mode <- [ModeInitiator, ModeResponder] ]
 
+    -- Construct an array used for controlling when an initiator application should start and
+    -- a return value for the initiator applications
+    setupInitiatorCtrlTbl :: m (MiniProtocolInitiatorControlTable ptcl m a)
+    setupInitiatorCtrlTbl = MiniProtocolInitiatorControlTable
+             . array (minBound, maxBound)
+           <$> sequence [ do q <- atomically newEmptyTMVar
+                             p <- atomically newEmptyTMVar
+                             return (ptcl, (q, p))
+                        | ptcl <- [minBound..maxBound]
+                        ]
+
+    -- Construct an array used for providing the return value for responder applications
+    setupResponderCtrlTbl :: m (MiniProtocolResponderControlTable ptcl m b)
+    setupResponderCtrlTbl = MiniProtocolResponderControlTable
+             . array (minBound, maxBound)
+           <$> sequence [ do q <- atomically newEmptyTMVar
+                             return (ptcl, q)
+                        | ptcl <- [minBound..maxBound]
+                        ]
+
+    -- Provides two STM actions that is used to control Initiator miniprotocols.
+    mpsInitiatorCtrl :: MiniProtocolInitiatorControlTable ptcl m a
+                     -> ptcl
+                     -> MiniProtocolInitiatorControl m a
+    mpsInitiatorCtrl (MiniProtocolInitiatorControlTable tbl) mpdId =
+        let release = do
+                -- Signal to the miniprotocol that it is time to start.
+                putTMVar (fst $ tbl ! AppProtocolId mpdId) ()
+                return result
+            result  = do
+                -- Wait for the miniprotocol to finish.
+                a <- takeTMVar (snd $ tbl ! AppProtocolId mpdId)
+                return (a, MiniProtocolInitiatorControl release) in
+        MiniProtocolInitiatorControl release
+
+    -- Provide a STM action that is used to fetch the result from Responder miniprotocols.
+    mpsResponderCtrl :: MiniProtocolResponderControlTable ptcl m b
+                     -> ptcl
+                     -> MiniProtocolResponderControl m b
+    mpsResponderCtrl (MiniProtocolResponderControlTable tbl) mpdId =
+        MiniProtocolResponderControl $ takeTMVar (tbl ! AppProtocolId mpdId)
+
 
     mpsJob
       :: StrictTVar m Int
       -> PerMuxSharedState ptcl m
+      -> MiniProtocolInitiatorControlTable ptcl m a
+      -> MiniProtocolResponderControlTable ptcl m b
       -> ptcl
       -> m [(m (), String)]
-    mpsJob cnt pmss mpdId = do
+    mpsJob cnt pmss itbl rtbl mpdId = do
 
         initiatorChannel <- muxChannel tracer
                               pmss
@@ -157,26 +208,67 @@ muxStart tracer peerid app bearer = do
                               cnt
 
         return $ case app of
-          MuxInitiatorApplication initiator ->
-            [ ( initiator peerid mpdId initiatorChannel >> mpsJobExit cnt
+          MuxInitiatorApplication _ ->
+            [ ( mpsInitiatorBrooder itbl mpdId app initiatorChannel
               , show mpdId ++ " Initiator" )]
-          MuxResponderApplication responder ->
-            [ ( responder peerid mpdId responderChannel >> mpsJobExit cnt
-              , show mpdId ++ " Responder" )]
-          MuxInitiatorAndResponderApplication initiator responder ->
-            [ ( initiator peerid mpdId initiatorChannel >> mpsJobExit cnt
+          MuxResponderApplication _ ->
+            [ (mpsResponderBrooder pmss rtbl mpdId app responderChannel
+            , show mpdId ++ " Responder" )]
+          MuxInitiatorAndResponderApplication _ _ ->
+            [ ( mpsInitiatorBrooder itbl mpdId app initiatorChannel
               , show mpdId ++ " Initiator" )
-            , (responder peerid mpdId responderChannel >> mpsJobExit cnt
+            , (mpsResponderBrooder pmss rtbl mpdId app responderChannel
               , show mpdId ++ " Responder" )
             ]
 
-    -- cnt represent the number of SDUs that are queued but not yet sent.  Job
-    -- threads will be prevented from exiting until all SDUs have been
-    -- transmitted unless an exception/error is encounter. In that case all
-    -- jobs will be cancelled directly.
-    mpsJobExit :: StrictTVar m Int -> m ()
-    mpsJobExit cnt = do
+    mpsResponderBrooder
+      :: HasResponder appType ~ True
+      => PerMuxSharedState ptcl m
+      -> MiniProtocolResponderControlTable ptcl m b
+      -> ptcl
+      -> MuxApplication appType peerid ptcl m a b
+      -> Channel m
+      -> m ()
+    mpsResponderBrooder pmss (MiniProtocolResponderControlTable rtbl) mpdId rspApp channel = forever $ do
+        -- Wait for initiator until we startup
+        traceWith tracer $ MuxTraceBrooderResponderBrood (AppProtocolId mpdId)
+        atomically $ do
+            buf <- readTVar (ingressQueue (dispatchTable pmss) (AppProtocolId mpdId) ModeResponder)
+            when (buf == BL.empty)
+                retry
+            return ()
+        -- Initiator is active, start the responder side
+        traceWith tracer $ MuxTraceBrooderResponderHatch (AppProtocolId mpdId)
+        b <- (responderApplication rspApp) peerid mpdId channel
+        -- Responder side exited, wait until we should hatch another responder
+        traceWith tracer $ MuxTraceBrooderResponderDone (AppProtocolId mpdId)
+        -- Propagate the miniprotocol result.
+        atomically $ putTMVar (rtbl ! AppProtocolId mpdId) b
+
+    mpsInitiatorBrooder
+      :: HasInitiator appType ~ True
+      => MiniProtocolInitiatorControlTable ptcl m a
+      -> ptcl
+      -> MuxApplication appType peerid ptcl m a b
+      -> Channel m
+      -> m ()
+    mpsInitiatorBrooder (MiniProtocolInitiatorControlTable itbl) mpdId reqApp channel = forever $ do
+        traceWith tracer $ MuxTraceBrooderInitiatorBrood (AppProtocolId mpdId)
+        -- Wait for controller to signal that we should start the application
+        void $ atomically $ takeTMVar (fst $ itbl ! AppProtocolId mpdId)
+        traceWith tracer $ MuxTraceBrooderInitiatorHatch (AppProtocolId mpdId)
+        a <- (initiatorApplication reqApp) peerid mpdId channel
+        traceWith tracer $ MuxTraceBrooderInitiatorDone (AppProtocolId mpdId)
+        -- Propagate the miniprotocol result.
+        atomically $ putTMVar (snd $ itbl ! AppProtocolId mpdId) a
+
+    muxExit :: StrictTVar m Int -> m ()
+    muxExit cnt = do
         muxBearerSetState tracer bearer Dying
+
+        -- cnt represent the number of SDUs that are queued but not yet sent
+        -- We will be prevented from exiting until all SDUs have been
+        -- transmitted unless an exception/error is encounter.
         atomically $ do
             c <- readTVar cnt
             unless (c == 0) retry
