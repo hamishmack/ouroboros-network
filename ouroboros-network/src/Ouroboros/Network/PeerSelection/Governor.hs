@@ -7,7 +7,7 @@
 
 -- | This subsystem manages the discovery and selection of /upstream/ peers.
 --
-module Ouroboros.Network.PeerSelection (
+module Ouroboros.Network.PeerSelection.Governor (
     -- * Design overview
     -- $overview
 
@@ -17,46 +17,34 @@ module Ouroboros.Network.PeerSelection (
     PeerSelectionPolicy(..),
     PeerSelectionTargets(..),
     PeerSelectionActions(..),
---    peerSelectionGovernor,
+    peerSelectionGovernor,
 
     -- * Peer churn governor
     -- $peer-churn-governor
---    peerChurnGovernor,
+    peerChurnGovernor,
 
-    -- Everything, to avoid unused code warnings during dev
-    module Ouroboros.Network.PeerSelection,
 ) where
 
 import           Data.Void (Void)
 import           Data.Maybe (fromMaybe)
-import qualified Data.Foldable as Foldable
-import qualified Data.Set as Set
-import           Data.Set (Set)
 import qualified Data.Map.Strict as Map
 import           Data.Map.Strict (Map)
-import qualified Data.PriorityQueue.FingerTree as PQueue
-import           Data.PriorityQueue.FingerTree (PQueue)
 
 import           Control.Applicative (Alternative(empty, (<|>)))
-import           Control.Monad (when, unless)
 import           Control.Monad.Class.MonadAsync
+import           Control.Monad.Class.MonadFork
 import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadTime
-import           Control.Tracer (Tracer(..), traceWith, showTracing, stdoutTracer)
-import           Control.Exception (Exception(..), assert, SomeException{-, SomeAsyncException-})
-
--- for DNS provider
-import           Data.Word (Word32)
-import           Data.IP (IPv4)
-import qualified Network.DNS as DNS
-
--- for examples:
-import           Control.Monad.IOSim
-import           Control.Monad.Class.MonadSay
-import           Control.Monad.Class.MonadFork
 import           Control.Monad.Class.MonadTimer
+import           Control.Tracer (Tracer(..), traceWith)
+import           Control.Exception (Exception(..), assert, SomeException)
 
 
+import           Ouroboros.Network.PeerSelection.Types
+import qualified Ouroboros.Network.PeerSelection.KnownPeers as KnownPeers
+import           Ouroboros.Network.PeerSelection.KnownPeers (KnownPeers, KnownPeerInfo(..))
+import qualified Ouroboros.Network.PeerSelection.JobPool    as JobPool
+import           Ouroboros.Network.PeerSelection.JobPool (JobPool, Job(..))
 
 
 
@@ -552,7 +540,7 @@ emptyPeerSelectionState =
       now                  = Time 0,
       targets              = nullPeerSelectionTargets,
       rootPeers            = Map.empty,
-      knownPeers           = emptyKnownPeers,
+      knownPeers           = KnownPeers.empty,
       establishedPeers     = Map.empty,
       activePeers          = Map.empty,
       inProgressGossipReqs = 0
@@ -561,39 +549,12 @@ emptyPeerSelectionState =
 invariantPeerSelectionState :: Ord peeraddr
                             => PeerSelectionState peeraddr -> Bool
 invariantPeerSelectionState PeerSelectionState{..} =
-    invariantKnownPeers knownPeers 
- && Map.isSubmapOfBy (\_ _ -> True) rootPeers (knownPeersByAddr knownPeers)
+    KnownPeers.invariant knownPeers 
+ && Map.isSubmapOfBy (\_ _ -> True) rootPeers (KnownPeers.toMap knownPeers)
  && Map.isSubmapOfBy (\_ _ -> True) activePeers establishedPeers
- && Map.isSubmapOfBy (\_ _ -> True) establishedPeers (knownPeersByAddr knownPeers)
+ && Map.isSubmapOfBy (\_ _ -> True) establishedPeers (KnownPeers.toMap knownPeers)
 
 
-type RootPeerSet peeraddr = Map peeraddr RootPeerInfo
-data RootPeerInfo = RootPeerInfo {
-
-       -- | Should we treat this root peer as persistent or ephemeral in the
-       -- known peer set? When the root peer set changes to remove peers,
-       -- persistent ones are kept in the known peer set, while ephemeral ones
-       -- are removed.
-       --
-       -- An ephemeral policy is appropriate for peers specified by
-       -- configuration, or DNS for singular addresses. A persistent policy
-       -- is appropriate for DNS names that correspond to pools of addresses.
-       --
-       rootPeerEphemeral :: !Bool,
-
-       -- | Should this root peer be advertised to other peers asking for
-       -- known peers? For certain peers specified by configuration it would
-       -- be an appropriate policy to keep them private.
-       --
-       rootPeerAdvertise :: !Bool
-     }
-  deriving (Eq, Show)
-
-data KnownPeerInfo = KnownPeerInfo {
-       knownPeerAdvertise :: !Bool,
-       knownPeerOther     :: ()
-     }
-  deriving (Eq, Show)
 
 data TracePeerSelection peeraddr =
        TraceRootPeerSetChanged (Map peeraddr RootPeerInfo)
@@ -612,7 +573,7 @@ peerSelectionGovernor :: (MonadAsync m, MonadFork m, MonadTimer m,
                       -> PeerSelectionPolicy  peeraddr m
                       -> m Void
 peerSelectionGovernor tracer actions policy =
-    withJobPool $ \jobPool ->
+    JobPool.withJobPool $ \jobPool ->
       peerSelectionGovernorLoop
         tracer actions policy
         jobPool
@@ -650,13 +611,13 @@ peerSelectionGovernorLoop tracer
     loop
   where
     loop :: PeerSelectionState peeraddr -> m Void
-    loop st = do
+    loop st = assert (invariantPeerSelectionState st) $ do
       Decision{decisionTrace, decisionEnact, decisionState = st'}
         <- atomically (evalGuarded (guardedDecisions st))
       traceWith tracer decisionTrace
       case decisionEnact of
         Nothing  -> return ()
-        Just job -> forkJob jobPool job
+        Just job -> JobPool.forkJob jobPool job
       loop st'
 
     guardedDecisions :: PeerSelectionState peeraddr
@@ -728,7 +689,7 @@ knownPeersBelowTarget actions
                                   }
                       }
     -- Are we under target for number of known peers?
-  | sizeKnownPeers knownPeers < targetNumberOfKnownPeers
+  | KnownPeers.size knownPeers < targetNumberOfKnownPeers
 
     -- Are we at our limit for number of gossip requests?
   , let newGossipReqs = policyMaxInProgressGossipReqs - inProgressGossipReqs
@@ -736,7 +697,7 @@ knownPeersBelowTarget actions
 
     -- Are there any known peers that we can send a gossip request to?
     -- We can only ask ones where we have not asked them within a certain time.
-  , let availableForGossip = knownPeersAvailableForGossip' knownPeers
+  , let availableForGossip = KnownPeers.availableForGossip knownPeers
   , not (Map.null availableForGossip)
   = Guarded $ do
       selectedForGossip <- policyPickKnownPeersForGossip
@@ -747,7 +708,7 @@ knownPeersBelowTarget actions
         decisionState = st {
                           inProgressGossipReqs = inProgressGossipReqs
                                                + newGossipReqs,
-                          knownPeers = adjustNextGossipTimes
+                          knownPeers = KnownPeers.setGossipTime
                                          selectedForGossip
                                          (addTime policyGossipRetryTime now)
                                          knownPeers
@@ -837,16 +798,16 @@ knownPeersAboveTarget PeerSelectionPolicy {
                       }
     -- Are we above the target for number of known peers?
   | let numPeersToForget :: Int
-        numPeersToForget = sizeKnownPeers knownPeers - targetNumberOfKnownPeers
+        numPeersToForget = KnownPeers.size knownPeers - targetNumberOfKnownPeers
   , numPeersToForget > 0
   = Guarded $ do
       selectedToForget <- policyPickColdPeersToForget
-                            (knownPeersByAddr knownPeers)
+                            (KnownPeers.toMap knownPeers)
                             numPeersToForget
       return Decision {
         decisionTrace = TraceForgetKnownPeers selectedToForget,
         decisionState = st {
-                          knownPeers = knownPeersDelete
+                          knownPeers = KnownPeers.delete
                                          selectedToForget
                                          knownPeers
                         },
@@ -920,7 +881,7 @@ changedRootPeerSet PeerSelectionActions{readRootPeerSet}
       check (rootPeers' /= rootPeers)
 
       let (knownPeers', _added, _changed, _removed) =
-            adjustKnownPeersRootSet rootPeers rootPeers' knownPeers
+            KnownPeers.adjustRootSet rootPeers rootPeers' knownPeers
       --TODO: when we have established/active peers and they're
       -- removed then we should disconnect from them.
       return Decision {
@@ -944,7 +905,8 @@ changedTargets PeerSelectionActions{readPeerSelectionTargets}
       return Decision {
         decisionTrace = TraceTargetsChanged targets targets',
         decisionEnact = Nothing,
-        decisionState = st { targets = targets' }
+        decisionState = assert (sanePeerSelectionTargets targets')
+                        st { targets = targets' }
       }
 
 
@@ -954,10 +916,10 @@ jobCompleted :: MonadSTM m
              -> Guarded (STM m) (Decision m peeraddr)
 jobCompleted jobPool _st =
     Guarded $ do
-      result <- collectJobResult jobPool
+      result <- JobPool.collect jobPool
       case result of
-        Left  err -> undefined
-        Right res -> undefined
+        Left  _err -> undefined
+        Right _res -> undefined
 
 
 establishedConnectionFailed :: MonadSTM m
@@ -972,52 +934,6 @@ timeoutFired :: MonadSTM m
 timeoutFired _ = GuardedSkip
 
 
-
-
-example1 :: SimM s ()
-example1 = do
-
-    rootPeersVar <- newTVarM peers0
-
-    _ <- fork $
-      peerSelectionGovernor
-        (Tracer (say . show))
-        PeerSelectionActions {
-          readRootPeerSet = readTVar rootPeersVar,
-          readPeerSelectionTargets =
-            pure PeerSelectionTargets {
-              targetNumberOfKnownPeers       = 10,
-              targetNumberOfEstablishedPeers = 4,
-              targetNumberOfActivePeers      = 1,
-              targetChurnIntervalKnownPeers       = 300,
-              targetChurnIntervalEstablishedPeers = 300,
-              targetChurnIntervalActivePeers      = 300
-            },
-          requestPeerGossip = \_ -> return []
-        }
-        PeerSelectionPolicy {
-          policyPickKnownPeersForGossip = \_ _ -> return [],
-
-          policyPickColdPeersToPromote  = \_ _ -> return [],
-          policyPickWarmPeersToPromote  = \_ _ -> return [],
-          policyPickHotPeersToDemote    = \_ _ -> return [],
-          policyPickWarmPeersToDemote   = \_ _ -> return [],
-          policyPickColdPeersToForget   = \_ _ -> return [],
-          policyMaxInProgressGossipReqs = 2,
-          policyGossipRetryTime         = 3600, -- seconds
-          policyGossipBatchWaitTime     = 3,    -- seconds
-          policyGossipOverallTimeout    = 10    -- seconds
-        }
-      >> return ()
-
-    threadDelay 1
-    atomically $ writeTVar rootPeersVar peers1
-    threadDelay 1
-
-  where
-    peers0 :: RootPeerSet Int
-    peers0 = Map.singleton 1 RootPeerInfo { rootPeerAdvertise = True, rootPeerEphemeral = False }
-    peers1 = Map.singleton 2 RootPeerInfo { rootPeerAdvertise = True, rootPeerEphemeral = True }
 
 
 
@@ -1064,295 +980,3 @@ waitAllCatchOrTimeout as t = do
       Right{} -> cancelTimeout timeout
       _       -> return ()
     return results
-
-
--------------------------------
--- Job pool
---
-
-data JobPool m a = JobPool !(TVar m (Set (ThreadId m)))
-                           !(TQueue m a)
-
-data Job m a = SingleOutputJob (m a)
-             | MultiOutputJob  ((a -> m ()) -> m a)
-
-withJobPool :: MonadSTM m => (JobPool m a -> m b) -> m b
-withJobPool = undefined
-
-forkJob :: (MonadSTM m, MonadFork m) => JobPool m a -> Job m a -> m ()
-forkJob = undefined
-
-jobPoolSize :: MonadSTM m => JobPool m a -> STM m Int
-jobPoolSize = undefined
-
-collectJobResult :: MonadSTM m => JobPool m a -> STM m (Either SomeException a)
-collectJobResult = undefined
-
-{-
-forkInThreadSet action =
-    mask $ \unmask -> do
-      tid <- fork $ do
-               res <- try action
-
-    mask $ \unmask -> do
-      tid <- fork $ unmask $ do
-               case action of
-                 AsyncActionSingleCompletion a ->
-               tid <- myThreadId
-               atomically $ writeTQueue complet
-      atomically $ modifyTVar' threadsVar (Set.insert tid)
-
-
-    mask $ \unmask -> do
-      tid <- fork $ unmask $ do
-               case action of
-                 AsyncActionSingleCompletion a ->
-               tid <- myThreadId
-               atomically $ writeTQueue complet
-      atomically $ modifyTVar' threadsVar (Set.insert tid)
-    aaction <- case action of
-      AsyncActionSingleCompletion a ->
-        async a
-
-    -- return updated state
-    return st'
-
-forkInThreadSet action =
-    mask $ \unmask -> do
-      tid <- fork $ do
-               res <- try action
--}
-
-
--------------------------------
--- Known peer set representation
---
-
-data KnownPeers peeraddr = KnownPeers {
-
-       -- | All the known peers.
-       --
-       knownPeersByAddr             :: !(Map peeraddr KnownPeerInfo),
-
-       -- | The subset of known peers that we would be allowed to gossip with
-       -- now. This is because we have not gossiped with them recently.
-       --
-       knownPeersAvailableForGossip :: !(Set peeraddr),
-
-       -- | The subset of known peers that we cannot gossip with now. It keeps
-       -- track of the next time we are allowed to gossip with them.
-       --
-       knownPeersNextGossipTimes    :: !(PQueue Time peeraddr)
-     }
-
-invariantKnownPeers :: Ord peeraddr => KnownPeers peeraddr -> Bool
-invariantKnownPeers KnownPeers{..} =
-    knownPeersAvailableForGossip
- <> Set.fromList (Foldable.toList knownPeersNextGossipTimes)
- ==
-    Map.keysSet knownPeersByAddr
-
-emptyKnownPeers :: KnownPeers peeraddr
-emptyKnownPeers =
-    KnownPeers {
-      knownPeersByAddr             = Map.empty,
-      knownPeersAvailableForGossip = Set.empty,
-      knownPeersNextGossipTimes    = PQueue.empty
-    }
-
--- TODO: resolve naming here
-knownPeersAvailableForGossip' KnownPeers {knownPeersByAddr, knownPeersAvailableForGossip} =
-    Map.restrictKeys knownPeersByAddr knownPeersAvailableForGossip
-
-knownPeersDelete :: [peeraddr] -> KnownPeers peeraddr -> KnownPeers peeraddr
-knownPeersDelete = undefined
-
-sizeKnownPeers :: KnownPeers peeraddr -> Int
-sizeKnownPeers = Map.size . knownPeersByAddr
-
-
-updateTime :: Time -> KnownPeers peeraddr -> KnownPeers peeraddr
-updateTime _ _ = undefined
-{-
-pqueueTakeLessThan :: Ord a => a -> PQueue Time a -> ([a], PQueue Time a)
-pqueueTakeLessThan = undefined
-
--}
-
-adjustNextGossipTimes :: [peeraddr]
-                      -> Time
-                      -> KnownPeers peeraddr
-                      -> KnownPeers peeraddr
-adjustNextGossipTimes _ _ = undefined
-
-
-adjustKnownPeersRootSet :: RootPeerSet peeraddr
-                        -> RootPeerSet peeraddr
-                        -> KnownPeers peeraddr
-                        -> (KnownPeers peeraddr,
-                            RootPeerSet peeraddr,
-                            RootPeerSet peeraddr,
-                            Set peeraddr)
-adjustKnownPeersRootSet rootPeers rootPeers' knownPeers = undefined
---    (knownPeers', added, changed, removed)
-{-
-  where
-    -- Ephemeral peers that we'll be removing from the knownPeers set
-    -- and from the established or active sets if necessary.
-    vanishingEphemeralPeers =
-      Map.filter rootPeerEphemeral $
-      Map.difference rootPeers rootPeers'
-
-    knownPeers' =
-        -- and add all new root peers
-        Map.unionWith mergeRootAndKnownPeer
-                      (Map.map rootToKnownPeer rootPeers')
-        -- remove old ephemeral root peers
-      $ Map.difference knownPeers vanishingEphemeralPeers
-
-    -- Keep the existing KnownPeer but override things specific to
-    -- root peers
-    mergeRootAndKnownPeer r k =
-      k { knownPeerAdvertise = knownPeerAdvertise r }
-
-    -- Root peer to a KnownPeer with minimal info, as if previously unknown.
-    rootToKnownPeer RootPeerInfo{rootPeerAdvertise} =
-      KnownPeerInfo {
-        knownPeerAdvertise = rootPeerAdvertise,
-        knownPeerOther     = ()
-      }
--}
-
-
--------------------------------
--- DNS root peer set provider
---
-
-data TraceRootPeerSetDns =
-       TraceMonitoringDomains [DNS.Domain]
-     | TraceWaitingForTTL DNS.Domain DiffTime
-     | TraceLookupResult  DNS.Domain [(IPv4, DNS.TTL)]
-     | TraceLookupFailure DNS.Domain DNS.DNSError
-       --TODO: classify DNS errors, config error vs transitory
-  deriving Show
-
--- |
---
--- This action typically runs indefinitely, but can terminate successfully in
--- corner cases where there is nothing to do.
---
-rootPeerSetProviderDns :: Tracer IO TraceRootPeerSetDns
-                       -> DNS.ResolvConf
-                       -> TVar IO (Map DNS.Domain (Map IPv4 RootPeerInfo))
-                       -> [DNS.Domain]
-                       -> IO ()
-rootPeerSetProviderDns tracer resolvConf rootPeersVar domains = do
-    traceWith tracer (TraceMonitoringDomains domains)
-    unless (null domains) $ do
-      rs <- DNS.makeResolvSeed resolvConf
-      DNS.withResolver rs $ \resolver ->
-        withAsyncAll (map (monitorDomain resolver) domains) $ \asyncs ->
-          waitAny asyncs >> return ()
-  where
-    rootPeerInfo = RootPeerInfo False True --TODO
-    monitorDomain resolver domain =
-        go 0
-      where
-        go :: DiffTime -> IO ()
-        go !ttl = do
-          when (ttl > 0) $ do
-            traceWith tracer (TraceWaitingForTTL domain ttl)
-            threadDelay ttl
-          reply <- lookupAWithTTL resolver domain
-          case reply of
-            Left  err -> do
-              traceWith tracer (TraceLookupFailure domain err)
-              go (ttlForDnsError err ttl)
-
-            Right results -> do
-              traceWith tracer (TraceLookupResult domain results)
-              atomically $ do
-                rootPeers <- readTVar rootPeersVar
-                let resultsMap :: Map IPv4 RootPeerInfo
-                    resultsMap = Map.fromList [ (addr, rootPeerInfo)
-                                              | (addr, _ttl) <- results ]
-                    rootPeers' :: Map DNS.Domain (Map IPv4 RootPeerInfo)
-                    rootPeers' = Map.insert domain resultsMap rootPeers
-
-                -- Only overwrite if it changed:
-                when (Map.lookup domain rootPeers /= Just resultsMap) $
-                  writeTVar rootPeersVar rootPeers'
-
-              go (ttlForResults results ttl)
-
-    -- Policy for TTL for positive results
-    ttlForResults :: [(IPv4, DNS.TTL)] -> DiffTime -> DiffTime
-
-    -- This case says we have a successful reply but there is no answer.
-    -- This covers for example non-existent TLDs since there is no authority
-    -- to say that they should not exist.
-    ttlForResults [] ttl = ttlForDnsError DNS.NameError ttl
-
-    ttlForResults rs _   = clipTTLBelow
-                         . clipTTLAbove
-                         . (fromIntegral :: Word32 -> DiffTime)
-                         $ maximum (map snd rs)
-
-    -- Policy for TTL for negative results
-    -- Cache negative response for 3hrs
-    -- Otherwise, use exponential backoff, up to a limit
-    ttlForDnsError :: DNS.DNSError -> DiffTime -> DiffTime
-    ttlForDnsError DNS.NameError _ = 10800
-    ttlForDnsError _           ttl = clipTTLAbove (ttl * 2 + 5)
-
-    -- Limit insane TTL choices.
-    clipTTLAbove, clipTTLBelow :: DiffTime -> DiffTime
-    clipTTLBelow = max 60     -- between 1min
-    clipTTLAbove = min 86400  -- and 24hrs
-
-
--- | Like 'DNS.lookupA' but also return the TTL for the results.
---
-lookupAWithTTL :: DNS.Resolver
-               -> DNS.Domain
-               -> IO (Either DNS.DNSError [(IPv4, DNS.TTL)])
-lookupAWithTTL resolver domain = do
-    reply <- DNS.lookupRaw resolver domain DNS.A
-    case reply of
-      Left  err -> return (Left err)
-      Right ans -> return (DNS.fromDNSMessage ans selectA)
-      --TODO: we can get the SOA TTL on NXDOMAIN here if we want to
-  where
-    selectA DNS.DNSMessage { answer } =
-      [ (addr, ttl)
-      | DNS.ResourceRecord { rdata = DNS.RD_A addr, rrttl = ttl } <- answer ]
-
-
-withAsyncAll :: [IO a] -> ([Async IO a] -> IO b) -> IO b
-withAsyncAll xs0 action = go [] xs0
-  where
-    go as []     = action as
-    go as (x:xs) = withAsync x (\a -> go (a:as) xs)
-
-example2 :: [DNS.Domain] -> IO ()
-example2 domains = do
-    rootPeersVar <- newTVarM Map.empty
---    withAsync (observer rootPeersVar Map.empty) $ \_ ->
-    (provider rootPeersVar)
-  where
-    provider rootPeersVar =
-      rootPeerSetProviderDns
-        (showTracing stdoutTracer)
-        DNS.defaultResolvConf
-        rootPeersVar
-        domains
-
-    observer :: (Eq a, Show a) => TVar IO a -> a -> IO ()
-    observer var fingerprint = do
-      x <- atomically $ do
-        x <- readTVar var
-        check (x /= fingerprint)
-        return x
-      traceWith (showTracing stdoutTracer) x
-      observer var x
-
