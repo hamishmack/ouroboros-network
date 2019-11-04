@@ -29,10 +29,12 @@ import           Data.Void (Void)
 import           Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as Map
 import           Data.Map.Strict (Map)
+--import qualified Data.Set as Set
+--import           Data.Set (Set)
 
 import           Control.Applicative (Alternative(empty, (<|>)))
 import           Control.Monad.Class.MonadAsync
-import           Control.Monad.Class.MonadFork
+import           Control.Monad.Class.MonadThrow
 import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadTime
 import           Control.Monad.Class.MonadTimer
@@ -414,16 +416,15 @@ base our decision on include:
 -}
 
 
-data PeerSelectionPolicy peer m = PeerSelectionPolicy {
+data PeerSelectionPolicy peeraddr m = PeerSelectionPolicy {
 
        --TODO: where do we decide how many to pick in one go?
-       policyPickKnownPeersForGossip :: Map peer KnownPeerInfo -> Int -> STM m [peer],
-
-       policyPickColdPeersToPromote  :: Map peer KnownPeerInfo -> Int -> STM m [peer],
-       policyPickWarmPeersToPromote  :: Map peer () -> Int -> STM m [peer],
-       policyPickHotPeersToDemote    :: Map peer () -> Int -> STM m [peer],
-       policyPickWarmPeersToDemote   :: Map peer () -> Int -> STM m [peer],
-       policyPickColdPeersToForget   :: Map peer KnownPeerInfo -> Int -> STM m [peer],
+       policyPickKnownPeersForGossip :: Map peeraddr KnownPeerInfo -> Int -> STM m [peeraddr],
+--     policyPickColdPeersToPromote  :: Map peeraddr KnownPeerInfo -> Int -> STM m [peeraddr],
+--     policyPickWarmPeersToPromote  :: Map peeraddr () -> Int -> STM m [peeraddr],
+--     policyPickHotPeersToDemote    :: Map peeraddr () -> Int -> STM m [peeraddr],
+--     policyPickWarmPeersToDemote   :: Map peeraddr () -> Int -> STM m [peeraddr],
+       policyPickColdPeersToForget   :: Map peeraddr KnownPeerInfo -> Int -> STM m [peeraddr],
 
        policyMaxInProgressGossipReqs :: !Int,
        policyGossipRetryTime         :: !DiffTime,
@@ -441,12 +442,12 @@ data PeerSelectionTargets = PeerSelectionTargets {
 
        targetNumberOfKnownPeers       :: !Int,
        targetNumberOfEstablishedPeers :: !Int,
-       targetNumberOfActivePeers      :: !Int,
+       targetNumberOfActivePeers      :: !Int
 
        -- Expressed as intervals rather than frequencies
-       targetChurnIntervalKnownPeers       :: !DiffTime,
-       targetChurnIntervalEstablishedPeers :: !DiffTime,
-       targetChurnIntervalActivePeers      :: !DiffTime
+--     targetChurnIntervalKnownPeers       :: !DiffTime,
+--     targetChurnIntervalEstablishedPeers :: !DiffTime,
+--     targetChurnIntervalActivePeers      :: !DiffTime
      }
   deriving (Eq, Show)
 
@@ -455,10 +456,10 @@ nullPeerSelectionTargets =
     PeerSelectionTargets {
        targetNumberOfKnownPeers       = 0,
        targetNumberOfEstablishedPeers = 0,
-       targetNumberOfActivePeers      = 0,
-       targetChurnIntervalKnownPeers       = 0,
-       targetChurnIntervalEstablishedPeers = 0,
-       targetChurnIntervalActivePeers      = 0
+       targetNumberOfActivePeers      = 0
+--     targetChurnIntervalKnownPeers       = 0,
+--     targetChurnIntervalEstablishedPeers = 0,
+--     targetChurnIntervalActivePeers      = 0
     }
 
 sanePeerSelectionTargets :: PeerSelectionTargets -> Bool
@@ -555,18 +556,9 @@ invariantPeerSelectionState PeerSelectionState{..} =
  && Map.isSubmapOfBy (\_ _ -> True) establishedPeers (KnownPeers.toMap knownPeers)
 
 
-
-data TracePeerSelection peeraddr =
-       TraceRootPeerSetChanged (Map peeraddr RootPeerInfo)
-     | TraceTargetsChanged     PeerSelectionTargets PeerSelectionTargets
-     | TraceForgetKnownPeers   [peeraddr]
-  deriving (Eq, Show)
-
-
-
 -- |
 --
-peerSelectionGovernor :: (MonadAsync m, MonadFork m, MonadTimer m,
+peerSelectionGovernor :: (MonadAsync m, MonadMask m, MonadTimer m,
                           Alternative (STM m), Ord peeraddr)
                       => Tracer m (TracePeerSelection peeraddr)
                       -> PeerSelectionActions peeraddr m
@@ -596,12 +588,12 @@ peerSelectionGovernor tracer actions policy =
 -- action asynchronously.
 --
 peerSelectionGovernorLoop :: forall m peeraddr.
-                             (MonadAsync m, MonadFork m, MonadTimer m,
+                             (MonadAsync m, MonadMask m, MonadTimer m,
                               Alternative (STM m), Ord peeraddr)
                           => Tracer m (TracePeerSelection peeraddr)
                           -> PeerSelectionActions peeraddr m
                           -> PeerSelectionPolicy  peeraddr m
-                          -> JobPool m (ActionCompletion peeraddr)
+                          -> JobPool m (Completion m peeraddr)
                           -> PeerSelectionState peeraddr
                           -> m Void
 peerSelectionGovernorLoop tracer
@@ -611,7 +603,7 @@ peerSelectionGovernorLoop tracer
     loop
   where
     loop :: PeerSelectionState peeraddr -> m Void
-    loop st = assert (invariantPeerSelectionState st) $ do
+    loop !st = assert (invariantPeerSelectionState st) $ do
       Decision{decisionTrace, decisionEnact, decisionState = st'}
         <- atomically (evalGuarded (guardedDecisions st))
       traceWith tracer decisionTrace
@@ -656,17 +648,26 @@ data Decision m peeraddr = Decision {
          -- | A trace event to classify the decision and action
        decisionTrace :: TracePeerSelection peeraddr,
 
-       -- | A 'Job' to execute asynchronously
-       decisionEnact :: Maybe (Job m (ActionCompletion peeraddr)),
-
          -- | An updated state to use immediately
-       decisionState :: PeerSelectionState peeraddr
+       decisionState :: PeerSelectionState peeraddr,
 
+       -- | An optional 'Job' to execute asynchronously. This job leads to
+       -- a further 'Decision'. This gives a state update to apply upon
+       -- completion, but also allows chaining further job actions.
+       --
+       decisionEnact :: Maybe (Job m (Completion m peeraddr))
      }
 
-data ActionCompletion peeraddr =
-       CompletedGossip [(peeraddr, Either SomeException [peeraddr])] -- either failure or result
---   | Complete ...
+newtype Completion m peeraddr =
+        Completion (PeerSelectionState peeraddr -> Decision m peeraddr)
+
+data TracePeerSelection peeraddr =
+       TraceRootPeerSetChanged (Map peeraddr RootPeerInfo)
+     | TraceTargetsChanged     PeerSelectionTargets PeerSelectionTargets
+     | TraceGossipRequests     [peeraddr]
+     | TraceGossipResults      [(peeraddr, Either SomeException [peeraddr])] --TODO: classify failures
+     | TraceForgetKnownPeers   [peeraddr]
+  deriving Show
 
 
 knownPeersBelowTarget :: (MonadAsync m, MonadTimer m, Ord peeraddr)
@@ -704,7 +705,7 @@ knownPeersBelowTarget actions
                              availableForGossip
                              newGossipReqs
       return Decision {
-        decisionTrace = undefined,
+        decisionTrace = TraceGossipRequests selectedForGossip,
         decisionState = st {
                           inProgressGossipReqs = inProgressGossipReqs
                                                + newGossipReqs,
@@ -713,74 +714,115 @@ knownPeersBelowTarget actions
                                          (addTime policyGossipRetryTime now)
                                          knownPeers
                         },
-        decisionEnact = Just (gossipsBatchJob actions policy selectedForGossip)
+        decisionEnact = Just (gossipsJob actions policy selectedForGossip)
       }
 
   | otherwise
   = GuardedSkip
 
+gossipsJob :: forall m peeraddr.
+              (MonadAsync m, MonadTimer m)
+           => PeerSelectionActions peeraddr m
+           -> PeerSelectionPolicy peeraddr m
+           -> [peeraddr]
+           -> Job m (Completion m peeraddr)
+gossipsJob PeerSelectionActions{requestPeerGossip}
+           PeerSelectionPolicy{..} =
+    \peers -> Job (jobPhase1 peers) (handler peers)
+  where
+    handler :: [peeraddr] -> SomeException -> Completion m peeraddr
+    handler peers e =
+      Completion $ \st ->
+      Decision {
+        decisionTrace = TraceGossipResults [ (p, Left e) | p <- peers ],
+        decisionState = st {
+                          inProgressGossipReqs = inProgressGossipReqs st
+                                               - length peers
+                        },
+        decisionEnact = Nothing
+      }
 
-gossipsBatchJob :: forall m peeraddr.
-                   (MonadAsync m, MonadTimer m)
-                => PeerSelectionActions peeraddr m
-                -> PeerSelectionPolicy peeraddr m
-                -> [peeraddr]
-                -> Job m (ActionCompletion peeraddr)
-gossipsBatchJob PeerSelectionActions{requestPeerGossip}
-                PeerSelectionPolicy{..}
-                peers =
-    MultiOutputJob $ \reportResult -> do
+    jobPhase1 :: [peeraddr] -> m (Completion m peeraddr)
+    jobPhase1 peers = do
+      -- In the typical case, where most requests return within a short
+      -- timeout we want to collect all the responses into a batch and
+      -- add them to the known peers set in one go.
+      --
+      -- So fire them all off in one go:
+      gossips <- sequence [ async (requestPeerGossip peer) | peer <- peers ]
 
-    -- In the typical case, where most requests return within a short
-    -- timeout we want to collect all the responses into a batch and
-    -- add them to the known peers set in one go.
-    --
-    -- So fire them all off in one go:
-    gossips <- sequence [ async (requestPeerGossip peer) | peer <- peers ]
+      -- First to finish synchronisation between /all/ the gossips completing
+      -- or the timeout (with whatever partial results we have at the time)
+      results <- waitAllCatchOrTimeout gossips policyGossipBatchWaitTime
+      case results of
+        Right totalResults -> do
+          let peerResults = zip peers totalResults
+          return $ Completion $ \st -> Decision {
+            decisionTrace = TraceGossipResults peerResults,
+            decisionState = st {
+                              knownPeers = undefined, --KnownPeers.insert peerResults (knownPeers st),
+                              inProgressGossipReqs = inProgressGossipReqs st
+                                                   - length peers
+                            },
+            decisionEnact = Nothing
+          }
 
-    -- First to finish synchronisation between /all/ the gossips completing
-    -- or the timeout (with whatever partial results we have at the time)
-    firstBatch <- waitAllCatchOrTimeout gossips policyGossipBatchWaitTime
-    case firstBatch of
-      Right totalResults ->
-        return (CompletedGossip (zip peers totalResults))
+        -- But if any don't make the first timeout then they'll be added later
+        -- when they do reply or never if we hit the hard timeout.
+        Left partialResults -> do
 
-      -- But if any don't make the first timeout then they'll be added later
-      -- when they do reply or never if we hit the hard timeout.
-      Left partialResults -> do
+          -- We have to keep track of the relationship between the peer
+          -- addresses and the gossip requests, completed and still in progress:
+          let peerResults      = [ (p, r)
+                                 | (p, Just r)  <- zip peers   partialResults ]
+              peersRemaining   = [  p
+                                 | (p, Nothing) <- zip peers   partialResults ]
+              gossipsRemaining = [  a
+                                 | (a, Nothing) <- zip gossips partialResults ]
 
-        -- We have to keep track of the relationship between the peer
-        -- addresses and the gossip requests, completed and still in progress:
-        let completedPeers   = [ (p, r)
-                               | (p, Just r)  <- zip peers   partialResults ]
-            remainingPeers   = [  p
-                               | (p, Nothing) <- zip peers   partialResults ]
-            remainingGossips = [  a
-                               | (a, Nothing) <- zip gossips partialResults ]
+          return $ Completion $ \st -> Decision {
+            decisionTrace = TraceGossipResults peerResults,
+            decisionState = st {
+                              knownPeers = undefined, --KnownPeers.insert peerResults (knownPeers st),
+                              inProgressGossipReqs = inProgressGossipReqs st
+                                                   - length peers
+                            },
+            decisionEnact = Just $ Job (jobPhase2 peersRemaining gossipsRemaining)
+                                       (handler peersRemaining)
+          }
 
-        reportResult (CompletedGossip completedPeers)
+    jobPhase2 :: [peeraddr] -> [Async m [peeraddr]] -> m (Completion m peeraddr)
+    jobPhase2 peers gossips = do
 
-        -- Wait again, for all remaining to finish or a timeout.
-        stragglers <- waitAllCatchOrTimeout
-                        remainingGossips
-                        (policyGossipOverallTimeout
-                         - policyGossipBatchWaitTime)
-        case stragglers of
-          Right remainingResults -> do
-            let finalResults = zip remainingPeers remainingResults
-            return (CompletedGossip finalResults)
+      -- Wait again, for all remaining to finish or a timeout.
+      results <- waitAllCatchOrTimeout
+                      gossips
+                      (policyGossipOverallTimeout
+                       - policyGossipBatchWaitTime)
+      let peerResults =
+            case results of
+              Right totalResults  -> zip peers totalResults
+              Left partialResults -> [ (p, fromMaybe err r)
+                                     | (p, r) <- zip peers partialResults ]
+                where err = Left (toException AsyncCancelled)
 
-          Left partialResults' -> do
-            let incompleteGossips =
-                  [ a | (a, Nothing) <- zip remainingGossips partialResults' ]
-                finalResults =
-                  [ (p, r')
-                  | (p, r) <- zip remainingPeers partialResults'
-                  , let r' = fromMaybe (Left (toException AsyncCancelled)) r ]
+          gossipsIncomplete =
+            case results of
+              Right _totalResults -> []
+              Left partialResults ->
+                [ a | (a, Nothing) <- zip gossips partialResults ]
 
-            mapM_ cancel incompleteGossips
-            return (CompletedGossip finalResults)
+      mapM_ cancel gossipsIncomplete
 
+      return $ Completion $ \st -> Decision {
+        decisionTrace = TraceGossipResults peerResults,
+        decisionState = st {
+                          knownPeers = undefined, --KnownPeers.insert peerResults (knownPeers st),
+                          inProgressGossipReqs = inProgressGossipReqs st
+                                               - length peers
+                        },
+        decisionEnact = Nothing
+      }
 
 
 knownPeersAboveTarget :: MonadSTM m
@@ -841,33 +883,6 @@ activePeersAboveTarget :: PeerSelectionPolicy peeraddr m
                        -> Guarded (STM m) (Decision m peeraddr)
 activePeersAboveTarget _ _ = GuardedSkip
 
-{-
-
-
-knownPeersAboveTarget
-    -- Are we over target for known peers?
-  | sizeKnownPeers knownPeers > targetNumberOfKnownPeers
-  = Just (KnownPeersOverTarget 
-
-  | otherwise
-  = Nothing
-
-
-establishedPeersBelowTarget st
-
-    -- Are we below target for number of established peers?
-  | sizeKnownPeers knownPeers < targetNumberOfKnownPeers
-
-
-establishedPeersAboveTarget st
-
-
-activePeersBelowTarget st
-    -- Are we below target for number of established peers?
-  | 
-
-activePeersAboveTarget st
--}
 
 
 changedRootPeerSet :: (MonadSTM m, Eq peeraddr)
@@ -893,6 +908,7 @@ changedRootPeerSet PeerSelectionActions{readRootPeerSet}
         decisionEnact = Nothing
       }
 
+
 changedTargets :: MonadSTM m
                => PeerSelectionActions peeraddr m
                -> PeerSelectionState peeraddr
@@ -911,15 +927,15 @@ changedTargets PeerSelectionActions{readPeerSelectionTargets}
 
 
 jobCompleted :: MonadSTM m
-             => JobPool m (ActionCompletion peeraddr)
+             => JobPool m (Completion m peeraddr)
              -> PeerSelectionState peeraddr
              -> Guarded (STM m) (Decision m peeraddr)
-jobCompleted jobPool _st =
+jobCompleted jobPool st =
+    -- This case is simple because the job pool returns a 'Completion' which is
+    -- just a function from the current state to a new 'Decision'.
     Guarded $ do
-      result <- JobPool.collect jobPool
-      case result of
-        Left  _err -> undefined
-        Right _res -> undefined
+      Completion completion <- JobPool.collect jobPool
+      return $! completion st
 
 
 establishedConnectionFailed :: MonadSTM m
@@ -932,8 +948,6 @@ timeoutFired :: MonadSTM m
              => PeerSelectionState peeraddr
              -> Guarded (STM m) (Decision m peeraddr)
 timeoutFired _ = GuardedSkip
-
-
 
 
 

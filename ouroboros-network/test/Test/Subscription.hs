@@ -13,7 +13,7 @@
 
 module Test.Subscription (tests) where
 
-import           Control.Concurrent hiding (threadDelay)
+--import           Control.Concurrent hiding (threadDelay)
 import           Control.Monad (replicateM, unless, when)
 import           Control.Monad.Class.MonadAsync
 import           Control.Monad.Class.MonadSay
@@ -812,7 +812,7 @@ _demo = ioProperty $ do
 
 data WithThreadAndTime a = WithThreadAndTime {
       wtatOccuredAt    :: !UTCTime
-    , wtatWithinThread :: !ThreadId
+    , wtatWithinThread :: !(ThreadId IO)
     , wtatEvent        :: !a
     }
 

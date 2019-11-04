@@ -6,7 +6,8 @@
 {-# LANGUAGE TypeFamilies              #-}
 
 module Control.Monad.Class.MonadAsync
-  ( MonadAsync (..)
+  ( MonadAsync(..)
+  , MonadThread(..)
   , AsyncCancelled(..)
   , ExceptionInLinkedThread(..)
   , link

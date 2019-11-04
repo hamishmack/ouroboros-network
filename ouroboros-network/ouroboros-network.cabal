@@ -57,7 +57,11 @@ library
                        Ouroboros.Network.NodeToNode
                        Ouroboros.Network.NodeToClient
                        Ouroboros.Network.Point
-                       Ouroboros.Network.PeerSelection
+                       Ouroboros.Network.PeerSelection.Types
+                       Ouroboros.Network.PeerSelection.KnownPeers
+                       Ouroboros.Network.PeerSelection.RootPeersDNS
+                       Ouroboros.Network.PeerSelection.JobPool
+                       Ouroboros.Network.PeerSelection.Governor
                        Ouroboros.Network.Server.ConnectionTable
                        Ouroboros.Network.Server.Socket
                        Ouroboros.Network.Server.Version.CBOR

@@ -124,9 +124,13 @@ lookupAWithTTL resolver domain = do
       Right ans -> return (DNS.fromDNSMessage ans selectA)
       --TODO: we can get the SOA TTL on NXDOMAIN here if we want to
   where
-    selectA DNS.DNSMessage { answer } =
+    selectA DNS.DNSMessage { DNS.answer } =
       [ (addr, ttl)
-      | DNS.ResourceRecord { rdata = DNS.RD_A addr, rrttl = ttl } <- answer ]
+      | DNS.ResourceRecord {
+          DNS.rdata = DNS.RD_A addr,
+          DNS.rrttl = ttl
+        } <- answer
+      ]
 
 
 withAsyncAll :: [IO a] -> ([Async IO a] -> IO b) -> IO b

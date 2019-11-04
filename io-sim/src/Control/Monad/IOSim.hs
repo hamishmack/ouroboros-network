@@ -76,7 +76,7 @@ import           Control.Monad.Class.MonadSay
 import           Control.Monad.Class.MonadST
 import           Control.Monad.Class.MonadSTM hiding (STM, TVar)
 import qualified Control.Monad.Class.MonadSTM as MonadSTM
-import           Control.Monad.Class.MonadAsync hiding (Async)
+import           Control.Monad.Class.MonadAsync hiding (Async, ThreadId)
 import qualified Control.Monad.Class.MonadAsync as MonadAsync
 import           Control.Monad.Class.MonadTime
 import           Control.Monad.Class.MonadTimer
