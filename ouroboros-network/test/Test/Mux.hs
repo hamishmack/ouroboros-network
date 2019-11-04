@@ -130,8 +130,24 @@ demo chain0 updates delay = do
                         encode             decode)
                         producerPeer)
 
+        consumerK ctrlFn _ = do
+            let (Mx.MiniProtocolInitiatorControl release) = ctrlFn ChainSyncPr
+
+            result <- atomically $ release
+
+            _ <- atomically $ result
+            return ()
+
+        producerK _ rspFn = do
+            let (Mx.MiniProtocolResponderControl result) = rspFn ChainSyncPr
+
+            _ <- atomically $ result
+            return ()
+
     clientAsync <- async $ Mx.runMuxWithQueues activeTracer "consumer" (Mx.toApplication consumerApp) client_w client_r sduLen Nothing
+                           consumerK
     serverAsync <- async $ Mx.runMuxWithQueues activeTracer "producer" (Mx.toApplication producerApp) server_w server_r sduLen Nothing
+                           producerK
 
     updateAid <- async $ sequence_
         [ do

@@ -30,14 +30,16 @@ module Ouroboros.Consensus.Node
 
 import qualified Codec.CBOR.Read as CBOR
 import qualified Codec.CBOR.Term as CBOR
-import           Control.Monad (forM, void)
+import           Control.Monad (forM, void, forever)
+import           Control.Monad.Class.MonadSTM.Strict
 import           Control.Tracer
 import           Crypto.Random
 import           Data.ByteString.Lazy (ByteString)
 import           Data.List (any)
 import           Data.Proxy (Proxy (..))
 import           Data.Time.Clock (secondsToDiffTime)
-import           Network.Mux.Types (MuxTrace, WithMuxBearer)
+import           Network.Mux.Types ( MuxTrace, WithMuxBearer, MiniProtocolInitiatorControl (..)
+                                   , MiniProtocolResponderControl (..))
 import           Network.Socket as Socket
 
 import           Ouroboros.Network.Block
@@ -315,6 +317,44 @@ initNetwork registry nodeArgs kernel RunNetworkArgs{..} = do
     let threads = localServer : ipSubscriptions : dnsSubscriptions ++ peerServers
     void $ waitAnyThread threads
   where
+    nodeToNodeClientCtrl :: ((NodeToNodeProtocols -> MiniProtocolInitiatorControl IO a)
+                         -> (NodeToNodeProtocols -> MiniProtocolResponderControl IO b)
+                         -> IO ())
+    nodeToNodeClientCtrl ctrlFn _ = do
+        let (MiniProtocolInitiatorControl csRelease) = ctrlFn ChainSyncWithHeadersPtcl
+            (MiniProtocolInitiatorControl bfRelease) = ctrlFn BlockFetchPtcl
+            (MiniProtocolInitiatorControl txRelease) = ctrlFn TxSubmissionPtcl
+
+        -- Signal to all MiniProtocols to start
+        csResult <- atomically $ csRelease
+        bfResult <- atomically $ bfRelease
+        txResult <- atomically $ txRelease
+
+        -- XXX wait forever
+        forever $ threadDelay 1
+
+    nodeToNodeServerCtrl :: ((NodeToNodeProtocols -> MiniProtocolInitiatorControl IO a)
+                         -> (NodeToNodeProtocols -> MiniProtocolResponderControl IO b)
+                         -> IO ())
+    nodeToNodeServerCtrl _ rspFn  = do
+        let (MiniProtocolResponderControl csResult) = rspFn ChainSyncWithHeadersPtcl
+            (MiniProtocolResponderControl bfResult) = rspFn BlockFetchPtcl
+            (MiniProtocolResponderControl txResult) = rspFn TxSubmissionPtcl
+
+        -- XXX wait forever
+        forever $ threadDelay 1
+
+    nodeToClientServerCtrl :: ((NodeToClientProtocols -> MiniProtocolInitiatorControl IO a)
+                           -> (NodeToClientProtocols -> MiniProtocolResponderControl IO b)
+                           -> IO ())
+    nodeToClientServerCtrl _ rspFn  = do
+        let (MiniProtocolResponderControl csResult) = rspFn ChainSyncWithBlocksPtcl
+            (MiniProtocolResponderControl txResult) = rspFn LocalTxSubmissionPtcl
+
+        -- wait forever
+        forever $ threadDelay 1
+
+
     networkApps :: NetworkApps peer
     networkApps = consensusNetworkApps
       kernel
@@ -337,6 +377,7 @@ initNetwork registry nodeArgs kernel RunNetworkArgs{..} = do
         nodeToClientVersionData
         (localResponderNetworkApplication networkApps)
         wait
+        nodeToClientServerCtrl
 
     runPeerServer :: ConnectionTable IO Socket.SockAddr -> Socket.AddrInfo -> IO ()
     runPeerServer connTable myAddr =
@@ -349,6 +390,7 @@ initNetwork registry nodeArgs kernel RunNetworkArgs{..} = do
         nodeToNodeVersionData
         (responderNetworkApplication networkApps)
         wait
+        nodeToNodeServerCtrl
 
     runIpSubscriptionWorker :: ConnectionTable IO Socket.SockAddr
                             -> Maybe Socket.SockAddr
@@ -369,6 +411,7 @@ initNetwork registry nodeArgs kernel RunNetworkArgs{..} = do
         }
       nodeToNodeVersionData
       (initiatorNetworkApplication networkApps)
+      nodeToNodeClientCtrl
 
     runDnsSubscriptionWorker :: ConnectionTable IO Socket.SockAddr
                              -> Maybe Socket.SockAddr
@@ -397,3 +440,4 @@ initNetwork registry nodeArgs kernel RunNetworkArgs{..} = do
       dnsProducer
       nodeToNodeVersionData
       (initiatorNetworkApplication networkApps)
+      nodeToNodeClientCtrl

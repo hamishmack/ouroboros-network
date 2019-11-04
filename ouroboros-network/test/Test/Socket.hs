@@ -161,7 +161,6 @@ prop_socket_send_recv_ipv4 f xs = ioProperty $ do
     client:_ <- Socket.getAddrInfo Nothing (Just "127.0.0.1") (Just "0")
     prop_socket_send_recv client server f xs
 
-
 #ifdef OUROBOROS_NETWORK_IPV6
 
 -- | Send and receive over IPv6
@@ -208,15 +207,9 @@ prop_socket_send_recv :: Socket.AddrInfo
                       -> IO Bool
 prop_socket_send_recv initiatorAddr responderAddr f xs = do
 
-    cv <- newEmptyTMVarM
-    sv <- newEmptyTMVarM
+    cv <- newEmptyTMVarM :: IO (StrictTMVar IO [Int])
+    sv <- newEmptyTMVarM :: IO (StrictTMVar IO Int)
     tbl <- newConnectionTable
-
-    {- The siblingVar is used by the initiator and responder to wait on each other before exiting.
-     - Without this wait there is a risk that one side will finish first causing the Muxbearer to
-     - be torn down and the other side exiting before it has a chance to write to its result TMVar.
-     -}
-    siblingVar <- newTVarM 2
 
     let -- Server Node; only req-resp server
         responderApp :: OuroborosApplication Mx.ResponderApp () TestProtocols2 IO BL.ByteString Void ()
@@ -228,7 +221,6 @@ prop_socket_send_recv initiatorAddr responderAddr f xs = do
                          channel
                          (ReqResp.reqRespServerPeer (ReqResp.reqRespServerMapAccumL (\a -> pure . f a) 0))
             atomically $ putTMVar sv r
-            waitSibling siblingVar
 
         -- Client Node; only req-resp client
         initiatorApp :: OuroborosApplication Mx.InitiatorApp () TestProtocols2 IO BL.ByteString () Void
@@ -240,7 +232,20 @@ prop_socket_send_recv initiatorAddr responderAddr f xs = do
                          channel
                          (ReqResp.reqRespClientPeer (ReqResp.reqRespClientMap xs))
             atomically $ putTMVar cv r
-            waitSibling siblingVar
+
+        clientK ctrlFn _ = do
+            let (Mx.MiniProtocolInitiatorControl release) = ctrlFn ReqRespPr
+
+            result <- atomically $ release
+
+            _ <- atomically $ result
+            return ()
+
+        serverK _ rspFn = do
+            let (Mx.MiniProtocolResponderControl result) = rspFn ReqRespPr
+
+            _ <- atomically $ result
+            return ()
 
     res <-
       withServerNode
@@ -253,27 +258,21 @@ prop_socket_send_recv initiatorAddr responderAddr f xs = do
         (\_ _ -> ())
         (\(DictVersion _) -> acceptEq)
         (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) responderApp)
-        $ \_ _ -> do
-          connectToNode
-            (\(DictVersion codec) -> encodeTerm codec)
-            (\(DictVersion codec) -> decodeTerm codec)
-            activeMuxTracer
-            nullTracer
-            (\_ _ -> ())
-            (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) initiatorApp)
-            (Just initiatorAddr)
-            responderAddr
-          atomically $ (,) <$> takeTMVar sv <*> takeTMVar cv
+        (\_ _ -> do
+            connectToNode
+              (\(DictVersion codec) -> encodeTerm codec)
+              (\(DictVersion codec) -> decodeTerm codec)
+              activeMuxTracer
+              nullTracer
+              (\_ _ -> ())
+              (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) initiatorApp)
+              (Just initiatorAddr)
+              responderAddr
+              clientK
+            atomically $ (,) <$> takeTMVar sv <*> takeTMVar cv)
+        serverK
 
     return (res == mapAccumL f 0 xs)
-
-  where
-    waitSibling :: StrictTVar IO Int -> IO ()
-    waitSibling cntVar = do
-        atomically $ modifyTVar cntVar (\a -> a - 1)
-        atomically $ do
-            cnt <- readTVar cntVar
-            unless (cnt == 0) retry
 
 -- |
 -- Verify that we raise the correct exception in case a socket closes during
@@ -295,6 +294,12 @@ prop_socket_recv_close f _ = ioProperty $ do
                          (ReqResp.reqRespServerPeer (ReqResp.reqRespServerMapAccumL (\a -> pure . f a) 0))
             atomically $ putTMVar sv r
 
+        serverK _ rspFn = do
+            let (Mx.MiniProtocolResponderControl result) = rspFn ReqRespPr
+
+            _ <- atomically $ result
+            return ()
+
     bracket
       (Socket.socket Socket.AF_INET Socket.Stream Socket.defaultProtocol)
       Socket.close
@@ -314,7 +319,7 @@ prop_socket_recv_close f _ = ioProperty $ do
                 $ \(sd',_) -> do
                   bearer <- Mx.socketAsMuxBearer nullTracer sd'
                   Mx.muxBearerSetState nullTracer bearer Mx.Connected
-                  Mx.muxStart nullTracer () (toApplication app) bearer
+                  Mx.muxStart nullTracer () (toApplication app) bearer serverK
           )
           $ \muxAsync -> do
 
@@ -332,7 +337,6 @@ prop_socket_recv_close f _ = ioProperty $ do
                         Just me -> return $ Mx.errorType me === Mx.MuxBearerClosed
                         Nothing -> return $ counterexample (show e) False
               Right _ -> return $ property $ False
-
 
 prop_socket_client_connect_error :: (Int -> Int -> (Int, Int))
                                  -> [Int]
@@ -354,6 +358,14 @@ prop_socket_client_connect_error _ xs = ioProperty $ do
                                   :: Peer (ReqResp.ReqResp Int Int) AsClient ReqResp.StIdle IO [Int])
                   atomically $ putTMVar cv ()
 
+        clientK ctrlFn _ = do
+            let (Mx.MiniProtocolInitiatorControl release) = ctrlFn ReqRespPr
+
+            result <- atomically $ release
+
+            _ <- atomically $ result
+            return ()
+
 
     (res :: Either IOException Bool)
       <- try $ False <$ connectToNode
@@ -365,6 +377,7 @@ prop_socket_client_connect_error _ xs = ioProperty $ do
         (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) app)
         (Just clientAddr)
         serverAddr
+        clientK
 
     -- XXX Disregarding the exact exception type
     pure $ either (const True) id res
@@ -409,6 +422,20 @@ demo chain0 updates = do
                                                   encode             decode
                                                   encode             decode
 
+        consumerK ctrlFn _ = do
+            let (Mx.MiniProtocolInitiatorControl release) = ctrlFn ChainSyncPr
+
+            result <- atomically $ release
+
+            _ <- atomically $ result
+            return ()
+
+        producerK _ rspFn = do
+            let (Mx.MiniProtocolResponderControl result) = rspFn ChainSyncPr
+
+            _ <- atomically $ result
+            return ()
+
     withServerNode
       nullTracer
       nullTracer
@@ -419,7 +446,7 @@ demo chain0 updates = do
       (,)
       (\(DictVersion _) -> acceptEq)
       (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) responderApp)
-      $ \_ _ -> do
+      (\_ _ -> do
       withAsync
         (connectToNode
           (\(DictVersion codec) -> encodeTerm codec)
@@ -429,7 +456,8 @@ demo chain0 updates = do
           (,)
           (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) initiatorApp)
           (Just consumerAddress)
-          producerAddress)
+          producerAddress
+          consumerK)
         $ \ _connAsync -> do
           void $ fork $ sequence_
               [ do
@@ -441,7 +469,8 @@ demo chain0 updates = do
               | update <- updates
               ]
 
-          atomically $ takeTMVar done
+          atomically $ takeTMVar done)
+      producerK
 
   where
     checkTip target consumerVar = atomically $ do

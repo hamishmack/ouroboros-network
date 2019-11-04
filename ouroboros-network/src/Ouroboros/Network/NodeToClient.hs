@@ -149,6 +149,7 @@ connectTo
   -- ^ local address; the created socket will bind to it
   -> Socket.AddrInfo
   -- ^ remote address
+  -> ((NodeToClientProtocols -> MiniProtocolInitiatorControl IO a) -> (NodeToClientProtocols -> MiniProtocolResponderControl IO b) -> IO ())
   -> IO ()
 connectTo =
   connectToNode
@@ -173,8 +174,9 @@ connectTo_V1
   -- ^ local address; the created socket will bind to it
   -> Socket.AddrInfo
   -- ^ remote address
+  -> ((NodeToClientProtocols -> MiniProtocolInitiatorControl IO a) -> (NodeToClientProtocols -> MiniProtocolResponderControl IO b) -> IO ())
   -> IO ()
-connectTo_V1 muxTracer handshakeTracer peeridFn versionData application =
+connectTo_V1 muxTracer handshakeTracer peeridFn versionData application muxK =
   connectTo
     muxTracer
     handshakeTracer
@@ -184,6 +186,7 @@ connectTo_V1 muxTracer handshakeTracer peeridFn versionData application =
       versionData
       (DictVersion nodeToClientCodecCBORTerm)
       application)
+    muxK
 
 -- | A specialised version of 'Ouroboros.Network.Socket.withServerNode'; Use
 -- 'withServer_V1' instead of you would like to use 'NodeToCLientV_1' version of
@@ -201,8 +204,9 @@ withServer
   -> Versions NodeToClientVersion DictVersion
               (OuroborosApplication appType peerid NodeToClientProtocols IO BL.ByteString a b)
   -> (Async () -> IO t)
+  -> ((NodeToClientProtocols -> MiniProtocolInitiatorControl IO a) -> (NodeToClientProtocols -> MiniProtocolResponderControl IO b) -> IO ())
   -> IO t
-withServer muxTracer handshakeTracer tbl addr peeridFn acceptVersion versions k =
+withServer muxTracer handshakeTracer tbl addr peeridFn acceptVersion versions k muxK =
   withServerNode
     muxTracer
     handshakeTracer
@@ -214,6 +218,7 @@ withServer muxTracer handshakeTracer tbl addr peeridFn acceptVersion versions k 
     acceptVersion
     versions
     (\_ -> k)
+    muxK
 
 -- | A specialised version of 'withServer' which can only communicate using
 -- 'NodeToClientV_1' version of the protocol.
@@ -234,8 +239,9 @@ withServer_V1
   -- 'OuroborosResponderApplication' or
   -- 'OuroborosInitiatorAndResponderApplication'.
   -> (Async () -> IO t)
+  -> ((NodeToClientProtocols -> MiniProtocolInitiatorControl IO a) -> (NodeToClientProtocols -> MiniProtocolResponderControl IO b) -> IO ())
   -> IO t
-withServer_V1 muxTracer handshakeTracer tbl addr peeridFn versionData application =
+withServer_V1 muxTracer handshakeTracer tbl addr peeridFn versionData application muxK =
     withServer
       muxTracer handshakeTracer tbl addr peeridFn
       (\(DictVersion _) -> acceptEq)
@@ -244,6 +250,7 @@ withServer_V1 muxTracer handshakeTracer tbl addr peeridFn versionData applicatio
         versionData
         (DictVersion nodeToClientCodecCBORTerm)
         application)
+      muxK
 
 -- | 'ncSubscriptionWorker' which starts given application versions on each
 -- established connection.
@@ -272,6 +279,7 @@ ncSubscriptionWorker
           peerid
           NodeToClientProtocols
           IO BL.ByteString x y)
+    -> ((NodeToClientProtocols -> MiniProtocolInitiatorControl IO x) -> (NodeToClientProtocols -> MiniProtocolResponderControl IO y) -> IO ())
     -> IO void
 ncSubscriptionWorker
   subscriptionTracer
@@ -283,6 +291,7 @@ ncSubscriptionWorker
   connectionAttemptDelay
   ips
   versions
+  muxK
     = Subscription.ipSubscriptionWorker
         subscriptionTracer
         tbl
@@ -296,7 +305,8 @@ ncSubscriptionWorker
           muxTracer
           handshakeTracer
           peeridFn
-          versions)
+          versions
+          muxK)
 
 
 -- | Like 'ncSubscriptionWorker' but specific to 'NodeToClientV_1'.
@@ -319,6 +329,7 @@ ncSubscriptionWorker_V1
           peerid
           NodeToClientProtocols
           IO BL.ByteString x y)
+    -> ((NodeToClientProtocols -> MiniProtocolInitiatorControl IO x) -> (NodeToClientProtocols -> MiniProtocolResponderControl IO y) -> IO ())
     -> IO void
 ncSubscriptionWorker_V1
   subscriptionTracer
@@ -331,6 +342,7 @@ ncSubscriptionWorker_V1
   ips
   versionData
   application
+  muxK
     = ncSubscriptionWorker
         subscriptionTracer
         muxTracer
@@ -345,5 +357,5 @@ ncSubscriptionWorker_V1
           versionData
           (DictVersion nodeToClientCodecCBORTerm)
           application)
-
+        muxK
 

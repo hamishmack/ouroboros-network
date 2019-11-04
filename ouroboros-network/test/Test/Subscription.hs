@@ -99,7 +99,7 @@ instance Mx.MiniProtocolLimits TestProtocols2 where
 
 activeTracer :: Show a => Tracer IO a
 activeTracer = nullTracer
--- activeTracer = _verboseTracer -- Dump log messages to stdout.
+--activeTracer = _verboseTracer -- Dump log messages to stdout.
 
 --
 -- The list of all tests
@@ -116,7 +116,6 @@ tests =
         , testProperty "Send Recive with Dns worker (IO)" prop_send_recv
         , testProperty "Send Recieve with IP worker, Initiator and responder (IO)"
                prop_send_recv_init_and_rsp
-        -- , testProperty "subscription demo" _demo
         ]
 
 data LookupResult = LookupResult {
@@ -516,35 +515,45 @@ prop_send_recv f xs first = ioProperty $ do
 
     cv <- newEmptyTMVarM
     sv <- newEmptyTMVarM
-    siblingVar <- newTVarM 2
     tbl <- newConnectionTable
     clientTbl <- newConnectionTable
 
     let -- Server Node; only req-resp server
-        responderApp :: OuroborosApplication ResponderApp (Socket.SockAddr, Socket.SockAddr) TestProtocols2 IO BL.ByteString Void ()
+        responderApp :: OuroborosApplication ResponderApp (Socket.SockAddr, Socket.SockAddr) TestProtocols2 IO BL.ByteString Void Int
         responderApp = OuroborosResponderApplication $
           \peerid ReqRespPr channel -> do
-            r <- runPeer (tagTrace "Responder" activeTracer)
-                         ReqResp.codecReqResp
-                         peerid
-                         channel
-                         (ReqResp.reqRespServerPeer (ReqResp.reqRespServerMapAccumL (\a -> pure . f a) 0))
-            atomically $ putTMVar sv r
-            waitSiblingSub siblingVar
+            runPeer (tagTrace "Responder" activeTracer)
+                    ReqResp.codecReqResp
+                    peerid
+                    channel
+                    (ReqResp.reqRespServerPeer (ReqResp.reqRespServerMapAccumL (\a -> pure . f a) 0))
 
         -- Client Node; only req-resp client
-        initiatorApp :: OuroborosApplication InitiatorApp (Socket.SockAddr, Socket.SockAddr) TestProtocols2 IO BL.ByteString () Void
+        initiatorApp :: OuroborosApplication InitiatorApp (Socket.SockAddr, Socket.SockAddr) TestProtocols2 IO BL.ByteString [Int] Void
         initiatorApp = OuroborosInitiatorApplication $
           \peerid ReqRespPr channel -> do
-            r <- runPeer (tagTrace "Initiator" activeTracer)
-                         ReqResp.codecReqResp
-                         peerid
-                         channel
-                         (ReqResp.reqRespClientPeer (ReqResp.reqRespClientMap xs))
-            atomically $ putTMVar cv r
-            waitSiblingSub siblingVar
+            runPeer (tagTrace "Initiator" activeTracer)
+                    ReqResp.codecReqResp
+                    peerid
+                    channel
+                    (ReqResp.reqRespClientPeer (ReqResp.reqRespClientMap xs))
 
-    withDummyServer faultyAddress $
+        clientK ctrlFn _ = do
+            let (Mx.MiniProtocolInitiatorControl release) = ctrlFn ReqRespPr
+
+            result <- atomically release
+            atomically $ do
+                (r, _) <- result
+                putTMVar cv r
+            return ()
+
+        serverK _ rspFn = do
+            let (Mx.MiniProtocolResponderControl result) = rspFn ReqRespPr
+
+            atomically $ result >>= putTMVar sv
+            return ()
+
+    void $ withDummyServer faultyAddress $
       withServerNode
         nullTracer
         nullTracer
@@ -555,7 +564,7 @@ prop_send_recv f xs first = ioProperty $ do
         (,)
         (\(DictVersion _) -> acceptEq)
         (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) responderApp)
-        $ \_ _ ->
+        (\_ _ ->
           dnsSubscriptionWorker'
             activeTracer activeTracer
             clientTbl
@@ -566,7 +575,7 @@ prop_send_recv f xs first = ioProperty $ do
                 Nothing)
             (\_ -> Just minConnectionAttemptDelay)
             (DnsSubscriptionTarget "shelley-0.iohk.example" 6062 1)
-            (\_ -> waitSiblingSTM siblingVar)
+            (\_ -> readTMVar cv *> readTMVar sv)
             (connectToNode'
                 (\(DictVersion codec) -> encodeTerm codec)
                 (\(DictVersion codec) -> decodeTerm codec)
@@ -574,7 +583,9 @@ prop_send_recv f xs first = ioProperty $ do
                 nullTracer
                 (,)
                 (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0)
-                (DictVersion nodeToNodeCodecCBORTerm) initiatorApp))
+                (DictVersion nodeToNodeCodecCBORTerm) initiatorApp)
+                clientK))
+        serverK
 
     res <- atomically $ (,) <$> takeTMVar sv <*> takeTMVar cv
     return (res == mapAccumL f 0 xs)
@@ -591,19 +602,17 @@ prop_send_recv f xs first = ioProperty $ do
                 k
             )
 
-
 data ReqRspCfg = ReqRspCfg {
       rrcTag         :: !String
     , rrcServerVar   :: !(StrictTMVar IO Int)
     , rrcClientVar   :: !(StrictTMVar IO [Int])
-    , rrcSiblingVar  :: !(StrictTVar IO Int)
 }
 
-newReqRspCfg :: String -> StrictTVar IO Int -> IO ReqRspCfg
-newReqRspCfg tag siblingVar = do
+newReqRspCfg :: String -> IO ReqRspCfg
+newReqRspCfg tag = do
     sv <- newEmptyTMVarM
     cv <- newEmptyTMVarM
-    return $ ReqRspCfg tag sv cv siblingVar
+    return $ ReqRspCfg tag sv cv
 
 prop_send_recv_init_and_rsp
     :: (Int -> Int -> (Int, Int))
@@ -617,16 +626,11 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
     addrAVar <- newEmptyTMVarM
     addrBVar <- newEmptyTMVarM
 
-    siblingVar <- newTVarM 4
-    {- 4 comes from one initiator and responder running on the server and one initiator and
-     - and responder running on the client.
-     -}
-
     tblA <- newConnectionTable
     tblB <- newConnectionTable
 
-    rrcfgA <- newReqRspCfg "A" siblingVar
-    rrcfgB <- newReqRspCfg "B" siblingVar
+    rrcfgA <- newReqRspCfg "A"
+    rrcfgB <- newReqRspCfg "X"
 
     a_aid <- async $ startPassiveServer
       tblA
@@ -646,8 +650,26 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
 
   where
 
-    appX :: ReqRspCfg -> OuroborosApplication InitiatorAndResponderApp (Socket.SockAddr, Socket.SockAddr) TestProtocols2 IO BL.ByteString () ()
-    appX ReqRspCfg {rrcTag, rrcServerVar, rrcClientVar, rrcSiblingVar} = OuroborosInitiatorAndResponderApplication
+    muxK ReqRspCfg {rrcServerVar, rrcClientVar} ctrlFn rspFn = do
+        let (Mx.MiniProtocolResponderControl rspResult) = rspFn ReqRespPr
+            (Mx.MiniProtocolInitiatorControl intRelease) = ctrlFn ReqRespPr
+
+        intResult <- atomically intRelease
+
+        ((i, _), r) <- atomically $ (,) <$> intResult <*> rspResult
+        atomically $ putTMVar rrcClientVar i *> putTMVar rrcServerVar r
+
+    muxKFailing ReqRspCfg {rrcServerVar, rrcClientVar} _ rspFn = do
+        let (Mx.MiniProtocolResponderControl rspResult) = rspFn ReqRespPr
+
+        r <- atomically rspResult
+
+        -- We shouldn't reach this
+        atomically $ putTMVar rrcClientVar [0xdeadbeef] *> putTMVar rrcServerVar r
+
+
+    appX :: ReqRspCfg -> OuroborosApplication InitiatorAndResponderApp (Socket.SockAddr, Socket.SockAddr) TestProtocols2 IO BL.ByteString [Int] Int
+    appX ReqRspCfg {rrcTag} = OuroborosInitiatorAndResponderApplication
             -- Initiator
             (\peerid ReqRespPr channel -> do
              r <- runPeer (tagTrace (rrcTag ++ " Initiator") activeTracer)
@@ -655,9 +677,7 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
                          peerid
                          channel
                          (ReqResp.reqRespClientPeer (ReqResp.reqRespClientMap xs))
-             atomically $ putTMVar rrcClientVar r
-             -- wait for our responder and peer
-             waitSiblingSub rrcSiblingVar
+             return r
             )
             -- Responder
             (\peerid ReqRespPr channel -> do
@@ -667,9 +687,7 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
                          channel
                          (ReqResp.reqRespServerPeer (ReqResp.reqRespServerMapAccumL
                            (\a -> pure . f a) 0))
-             atomically $ putTMVar rrcServerVar r
-             -- wait for our initiator and peer
-             waitSiblingSub rrcSiblingVar
+             return r
             )
 
     startPassiveServer tbl responderAddr localAddrVar rrcfg = withServerNode
@@ -682,12 +700,12 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
         (,)
         (\(DictVersion _) -> acceptEq)
         (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) (appX rrcfg))
-        $ \localAddr _ -> do
+        (\localAddr _ -> do
           atomically $ putTMVar localAddrVar localAddr
           r <- atomically $ (,) <$> takeTMVar (rrcServerVar rrcfg)
                                 <*> takeTMVar (rrcClientVar rrcfg)
-          waitSibling (rrcSiblingVar rrcfg)
-          return r
+          return r)
+        (muxK rrcfg)
 
     startActiveServer tbl responderAddr localAddrVar remoteAddrVar rrcfg = withServerNode
         nullTracer
@@ -699,7 +717,7 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
         (,)
         (\(DictVersion _) -> acceptEq)
         ((simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) (appX rrcfg)))
-        $ \localAddr _ -> do
+        (\localAddr _ -> do
           atomically $ putTMVar localAddrVar localAddr
           remoteAddr <- atomically $ takeTMVar remoteAddrVar
           _ <- ipSubscriptionWorker
@@ -708,7 +726,7 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
             (LocalAddresses (Just localAddr) Nothing Nothing)
             (\_ -> Just minConnectionAttemptDelay)
             (IPSubscriptionTarget [remoteAddr] 1)
-            (\_ -> waitSiblingSTM (rrcSiblingVar rrcfg))
+            (\_ -> readTMVar (rrcClientVar rrcfg) *> readTMVar (rrcServerVar rrcfg))
             (connectToNode'
                 (\(DictVersion codec) -> encodeTerm codec)
                 (\(DictVersion codec) -> decodeTerm codec)
@@ -716,99 +734,11 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
                 nullTracer
                 (,)
                 (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0)
-                (DictVersion nodeToNodeCodecCBORTerm) $ appX rrcfg))
-
+                (DictVersion nodeToNodeCodecCBORTerm) $ appX rrcfg)
+                (muxK rrcfg))
           atomically $ (,) <$> takeTMVar (rrcServerVar rrcfg)
-                           <*> takeTMVar (rrcClientVar rrcfg)
-
-waitSiblingSub :: StrictTVar IO Int -> IO ()
-waitSiblingSub cntVar = do
-    atomically $ modifyTVar cntVar (\a -> a - 1)
-    waitSibling cntVar
-
-waitSiblingSTM :: StrictTVar IO Int -> STM IO ()
-waitSiblingSTM cntVar = do
-    cnt <- readTVar cntVar
-    unless (cnt == 0) retry
-
-waitSibling :: StrictTVar IO Int -> IO ()
-waitSibling = atomically . waitSiblingSTM
-
-{-
- - XXX Doesn't really test anything, doesn't exit in a resonable time.
- - XXX Depends on external network config
- - unbound DNS config example:
-local-data: "shelley-1.iohk.example. IN A 192.168.1.115"
-local-data: "shelley-1.iohk.example. IN A 192.168.1.215"
-local-data: "shelley-1.iohk.example. IN A 192.168.1.216"
-local-data: "shelley-1.iohk.example. IN A 192.168.1.100"
-local-data: "shelley-1.iohk.example. IN A 192.168.1.101"
-local-data: "shelley-1.iohk.example. IN A 127.0.0.1"
-local-data: "shelley-1.iohk.example. IN AAAA ::1"
-
-local-data: "shelley-0.iohk.example. IN AAAA ::1"
--}
-_demo :: Property
-_demo = ioProperty $ do
-    server:_ <- Socket.getAddrInfo Nothing (Just "192.168.1.100") (Just "6062")
-    server':_ <- Socket.getAddrInfo Nothing (Just "127.0.0.1") (Just "6062")
-    server6:_ <- Socket.getAddrInfo Nothing (Just "::1") (Just "6062")
-    server6':_ <- Socket.getAddrInfo Nothing (Just "::1") (Just "6064")
-    client:_ <- Socket.getAddrInfo Nothing (Just "127.0.0.1") (Just "0")
-    client6:_ <- Socket.getAddrInfo Nothing (Just "::1") (Just "0")
-
-    tbl <- newConnectionTable
-    clientTbl <- newConnectionTable
-
-    spawnServer tbl server 10000
-    spawnServer tbl server' 10000
-    spawnServer tbl server6 100
-    spawnServer tbl server6' 45
-
-    _ <- dnsSubscriptionWorker activeTracer activeTracer clientTbl
-            (LocalAddresses
-                (Just $ Socket.addrAddress client)
-                (Just $ Socket.addrAddress client6)
-                Nothing)
-            (\_ -> Just minConnectionAttemptDelay)
-            (DnsSubscriptionTarget "shelley-0.iohk.example" 6064 1)
-            (\_ -> retry)
-            (connectToNode'
-                (\(DictVersion codec) -> encodeTerm codec)
-                (\(DictVersion codec) -> decodeTerm codec)
-                nullTracer
-                nullTracer
-                (,)
-                (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0)
-                (DictVersion nodeToNodeCodecCBORTerm) appReq))
-
-    threadDelay 130
-    -- bring the servers back again
-    spawnServer tbl server6 10000
-    spawnServer tbl server6' 10000
-    threadDelay 1000
-    return ()
-
-  where
-
-    spawnServer tbl addr delay =
-        void $ async $ withServerNode
-            nullTracer
-            nullTracer
-            tbl
-            addr
-            (\(DictVersion codec) -> encodeTerm codec)
-            (\(DictVersion codec) -> decodeTerm codec)
-            (,)
-            (\(DictVersion _) -> acceptEq)
-            (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0)
-                (DictVersion nodeToNodeCodecCBORTerm) appRsp)
-            (\_ _ -> threadDelay delay)
-
-
-    appReq = OuroborosInitiatorApplication (\_ ChainSyncPr -> error "req fail")
-    appRsp = OuroborosResponderApplication (\_ ChainSyncPr -> error "rsp fail")
-
+                           <*> takeTMVar (rrcClientVar rrcfg))
+        (muxKFailing rrcfg)
 
 data WithThreadAndTime a = WithThreadAndTime {
       wtatOccuredAt    :: !UTCTime
@@ -840,5 +770,4 @@ instance (Show a) => Show (WithTag a) where
 
 tagTrace :: String -> Tracer IO (WithTag a) -> Tracer IO a
 tagTrace tag tr = Tracer $ \s -> traceWith tr $ WithTag tag s
-
 

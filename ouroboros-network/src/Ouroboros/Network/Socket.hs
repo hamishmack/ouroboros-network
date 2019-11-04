@@ -20,7 +20,6 @@ module Ouroboros.Network.Socket (
 
     -- * Helper function for creating servers
     , fromSocket
-    , beginConnection
 
     -- * Re-export connection table functions
     , newConnectionTable
@@ -112,9 +111,10 @@ connectToNode
   -> Maybe Socket.AddrInfo
   -- ^ local address; the created socket will bind to it
   -> Socket.AddrInfo
+  -> ((ptcl -> Mx.MiniProtocolInitiatorControl IO a) -> (ptcl -> Mx.MiniProtocolResponderControl IO b) -> IO ())
   -- ^ remote address
   -> IO ()
-connectToNode encodeData decodeData muxTracer handshakeTracer peeridFn versions localAddr remoteAddr =
+connectToNode encodeData decodeData muxTracer handshakeTracer peeridFn versions localAddr remoteAddr muxK =
     bracket
       (Socket.socket (Socket.addrFamily remoteAddr) Socket.Stream Socket.defaultProtocol)
       Socket.close
@@ -132,7 +132,7 @@ connectToNode encodeData decodeData muxTracer handshakeTracer peeridFn versions 
               Socket.bind sd (Socket.addrAddress addr)
             Nothing   -> return ()
           Socket.connect sd (Socket.addrAddress remoteAddr)
-          connectToNode' encodeData decodeData muxTracer handshakeTracer peeridFn versions sd
+          connectToNode' encodeData decodeData muxTracer handshakeTracer peeridFn versions muxK sd
       )
 
 -- |
@@ -165,9 +165,10 @@ connectToNode'
   -> (Socket.SockAddr -> Socket.SockAddr -> peerid)
   -> Versions vNumber extra (OuroborosApplication appType peerid ptcl IO BL.ByteString a b)
   -- ^ application to run over the connection
+  -> ((ptcl -> Mx.MiniProtocolInitiatorControl IO a) -> (ptcl -> Mx.MiniProtocolResponderControl IO b) -> IO ())
   -> Socket.Socket
   -> IO ()
-connectToNode' encodeData decodeData muxTracer handshakeTracer peeridFn versions sd = do
+connectToNode' encodeData decodeData muxTracer handshakeTracer peeridFn versions muxK sd = do
     peerid <- peeridFn <$> Socket.getSocketName sd <*> Socket.getPeerName sd
     let muxTracer' = Mx.WithMuxBearer peerid `contramap` muxTracer
     bearer <- Mx.socketAsMuxBearer muxTracer' sd
@@ -187,7 +188,7 @@ connectToNode' encodeData decodeData muxTracer handshakeTracer peeridFn versions
              throwIO err
          Right app -> do
              traceWith muxTracer' Mx.MuxTraceHandshakeEnd
-             Mx.muxStart muxTracer' peerid (toApplication app) bearer
+             Mx.muxStart muxTracer' peerid (toApplication app) bearer muxK
 
 
 -- |
@@ -201,7 +202,7 @@ connectToNode' encodeData decodeData muxTracer handshakeTracer peeridFn versions
 -- connection, the whole connection will terminate.  We might want to be more
 -- admissible in this scenario: leave the server thread running and let only
 -- the client thread to die.
-data AcceptConnection st vNumber extra peerid ptcl m bytes where
+data AcceptConnection st vNumber extra peerid ptcl m bytes a b where
 
     AcceptConnection
       :: forall appType st vNumber extra peerid ptcl m bytes a b.
@@ -209,12 +210,12 @@ data AcceptConnection st vNumber extra peerid ptcl m bytes where
       => !st
       -> !peerid
       -> Versions vNumber extra (OuroborosApplication appType peerid ptcl m bytes a b)
-      -> AcceptConnection st vNumber extra peerid ptcl m bytes
+      -> AcceptConnection st vNumber extra peerid ptcl m bytes a b
 
     RejectConnection
       :: !st
       -> !peerid
-      -> AcceptConnection st vNumber extra peerid ptcl m bytes
+      -> AcceptConnection st vNumber extra peerid ptcl m bytes a b
 
 
 -- |
@@ -222,7 +223,7 @@ data AcceptConnection st vNumber extra peerid ptcl m bytes where
 -- of the incoming connection.
 --
 beginConnection
-    :: forall peerid ptcl vNumber extra addr st.
+    :: forall peerid ptcl vNumber extra addr st a b.
        ( Mx.ProtocolEnum ptcl
        , Ord ptcl
        , Enum ptcl
@@ -240,10 +241,11 @@ beginConnection
     -> (forall vData. extra vData -> vData -> CBOR.Term)
     -> (forall vData. extra vData -> CBOR.Term -> Either Text vData)
     -> (forall vData. extra vData -> vData -> vData -> Accept)
-    -> (addr -> st -> STM.STM (AcceptConnection st vNumber extra peerid ptcl IO BL.ByteString))
+    -> ((ptcl -> Mx.MiniProtocolInitiatorControl IO a) -> (ptcl -> Mx.MiniProtocolResponderControl IO b) -> IO ())
+    -> (addr -> st -> STM.STM (AcceptConnection st vNumber extra peerid ptcl IO BL.ByteString a b))
     -- ^ either accept or reject a connection.
     -> Server.BeginConnection addr Socket.Socket st ()
-beginConnection muxTracer handshakeTracer encodeData decodeData acceptVersion fn addr st = do
+beginConnection muxTracer handshakeTracer encodeData decodeData acceptVersion muxK fn addr st = do
     accept <- fn addr st
     case accept of
       AcceptConnection st' peerid versions -> pure $ Server.Accept st' $ \sd -> do
@@ -265,7 +267,7 @@ beginConnection muxTracer handshakeTracer encodeData decodeData acceptVersion fn
             throwIO err
           Right app -> do
             traceWith muxTracer' $ Mx.MuxTraceHandshakeEnd
-            Mx.muxStart muxTracer' peerid (toApplication app) bearer
+            Mx.muxStart muxTracer' peerid (toApplication app) bearer muxK
       RejectConnection st' _peerid -> pure $ Server.Reject st'
 
 
@@ -320,7 +322,7 @@ fromSocket tblVar sd = Server.Socket
 -- Thin wrapper around @'Server.run'@.
 --
 runNetworkNode'
-    :: forall peerid ptcl st vNumber extra t.
+    :: forall peerid ptcl st vNumber extra t a b.
        ( Mx.ProtocolEnum ptcl
        , Ord ptcl
        , Enum ptcl
@@ -341,15 +343,16 @@ runNetworkNode'
     -> (forall vData. extra vData -> CBOR.Term -> Either Text vData)
     -> (forall vData. extra vData -> vData -> vData -> Accept)
     -- -> Versions vNumber extra (MuxApplication ServerApp ptcl IO)
+    -> ((ptcl -> Mx.MiniProtocolInitiatorControl IO a) -> (ptcl -> Mx.MiniProtocolResponderControl IO b) -> IO ())
     -> (SomeException -> IO ())
-    -> (Socket.SockAddr -> st -> STM.STM (AcceptConnection st vNumber extra peerid ptcl IO BL.ByteString))
+    -> (Socket.SockAddr -> st -> STM.STM (AcceptConnection st vNumber extra peerid ptcl IO BL.ByteString a b))
     -> Server.CompleteConnection st ()
     -> Server.Main st t
     -> st
     -> IO t
-runNetworkNode' muxTracer handshakeTracer tbl sd encodeData decodeData acceptVersion acceptException acceptConn complete
+runNetworkNode' muxTracer handshakeTracer tbl sd encodeData decodeData acceptVersion muxK acceptException acceptConn complete
     main st = Server.run (fromSocket tbl sd) acceptException (beginConnection muxTracer handshakeTracer encodeData decodeData
-        acceptVersion acceptConn) complete main st
+        acceptVersion muxK acceptConn) complete main st
 
 
 -- |
@@ -399,8 +402,9 @@ withServerNode
     -- ^ callback which takes the @Async@ of the thread that is running the server.
     -- Note: the server thread will terminate when the callback returns or
     -- throws an exception.
+    -> ((ptcl -> Mx.MiniProtocolInitiatorControl IO a) -> (ptcl -> Mx.MiniProtocolResponderControl IO b) -> IO ())
     -> IO t
-withServerNode muxTracer handshakeTracer tbl addr encodeData decodeData peeridFn acceptVersion versions k =
+withServerNode muxTracer handshakeTracer tbl addr encodeData decodeData peeridFn acceptVersion versions k muxK =
     bracket (mkListeningSocket (Socket.addrFamily addr) (Just $ Socket.addrAddress addr)) Socket.close $ \sd -> do
       addr' <- Socket.getSocketName sd
       withAsync
@@ -412,6 +416,7 @@ withServerNode muxTracer handshakeTracer tbl addr encodeData decodeData peeridFn
           encodeData
           decodeData
           acceptVersion
+          muxK
           throwIO
           (\connAddr st ->
             pure $ AcceptConnection

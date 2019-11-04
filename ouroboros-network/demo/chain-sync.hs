@@ -21,7 +21,7 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (STM, atomically, check)
 import Control.Concurrent.STM.TVar
 import Control.Concurrent.Async
-import Control.Monad (when)
+import Control.Monad (when, void)
 import Control.Exception
 import Control.Tracer
 
@@ -158,6 +158,7 @@ clientPingPong pipelined =
       (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) app)
       Nothing
       defaultLocalSocketAddrInfo
+      clientK
   where
     app :: OuroborosApplication InitiatorApp (Socket.SockAddr, Socket.SockAddr) DemoProtocol0 IO LBS.ByteString () Void
     app = simpleInitiatorApplication protocols
@@ -174,6 +175,12 @@ clientPingPong pipelined =
         (contramap show stdoutTracer)
         codecPingPong
         (pingPongClientPeer (pingPongClientCount 5))
+
+    clientK ctrlFn _ = do
+        let (MiniProtocolInitiatorControl ppRelease) = ctrlFn PingPong0
+
+        ppResult <- atomically ppRelease
+        void $ atomically ppResult
 
 
 pingPongClientCount :: Applicative m => Int -> PingPongClient m ()
@@ -192,8 +199,10 @@ serverPingPong = do
       (\(DictVersion codec)-> decodeTerm codec)
       (,)
       (\(DictVersion _) -> acceptEq)
-      (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) app) $ \_ serverAsync ->
-        wait serverAsync   -- block until async exception
+      (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) app)
+      (\_ serverAsync ->
+        wait serverAsync)   -- block until async exception
+      serverK
   where
     app :: OuroborosApplication ResponderApp (Socket.SockAddr, Socket.SockAddr) DemoProtocol0 IO LBS.ByteString Void ()
     app = simpleResponderApplication protocols
@@ -204,6 +213,11 @@ serverPingPong = do
         (contramap show stdoutTracer)
         codecPingPong
         (pingPongServerPeer pingPongServerStandard)
+
+    serverK _ rspFn = do
+        let (MiniProtocolResponderControl ppResult) = rspFn PingPong0
+
+        void $ atomically ppResult
 
 pingPongServerStandard
   :: Applicative m
@@ -245,6 +259,7 @@ clientPingPong2 =
       (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) app)
       Nothing
       defaultLocalSocketAddrInfo
+      clientK
   where
     app :: OuroborosApplication InitiatorApp (Socket.SockAddr, Socket.SockAddr) DemoProtocol1 IO LBS.ByteString () Void
     app = simpleInitiatorApplication protocols
@@ -263,6 +278,13 @@ clientPingPong2 =
         (contramap (show . (,) (2 :: Int)) stdoutTracer)
         codecPingPong
         (pingPongClientPeer (pingPongClientCount 5))
+
+    clientK ctrlFn _ = do
+        let (MiniProtocolInitiatorControl ppRelease) = ctrlFn PingPong1
+            (MiniProtocolInitiatorControl ppRelease') = ctrlFn PingPong1'
+
+        (ppResult, ppResult') <- atomically $ (,) <$> ppRelease <*> ppRelease'
+        void $ atomically $ ppResult *> ppResult'
 
 pingPongClientPipelinedMax
   :: forall m. Monad m
@@ -294,8 +316,10 @@ serverPingPong2 = do
       (\(DictVersion codec)-> decodeTerm codec)
       (,)
       (\(DictVersion _) -> acceptEq)
-      (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) app) $ \_ serverAsync ->
-        wait serverAsync   -- block until async exception
+      (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) app)
+      (\_ serverAsync ->
+        wait serverAsync)   -- block until async exception
+      serverK
   where
     app :: OuroborosApplication ResponderApp (Socket.SockAddr, Socket.SockAddr) DemoProtocol1 IO LBS.ByteString Void ()
     app = simpleResponderApplication protocols
@@ -314,6 +338,11 @@ serverPingPong2 = do
         codecPingPong
         (pingPongServerPeer pingPongServerStandard)
 
+    serverK _ rspFn = do
+        let (MiniProtocolResponderControl ppResult) = rspFn PingPong1
+            (MiniProtocolResponderControl ppResult') = rspFn PingPong1'
+
+        void $ atomically $ ppResult *> ppResult'
 
 --
 -- Chain sync demo
@@ -345,6 +374,7 @@ clientChainSync sockAddrs =
         (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) app)
         Nothing
         (mkLocalSocketAddrInfo sockAddr)
+        clientK
   where
     app :: OuroborosApplication InitiatorApp (Socket.SockAddr, Socket.SockAddr) DemoProtocol2 IO LBS.ByteString () Void
     app = simpleInitiatorApplication protocols
@@ -357,6 +387,11 @@ clientChainSync sockAddrs =
          codecChainSync
         (ChainSync.chainSyncClientPeer chainSyncClient)
 
+    clientK ctrlFn _ = do
+        let (MiniProtocolInitiatorControl csRelease) = ctrlFn ChainSync2
+
+        csResult <- atomically csRelease
+        void $ atomically $ csResult
 
 serverChainSync :: FilePath -> IO ()
 serverChainSync sockAddr = do
@@ -370,8 +405,10 @@ serverChainSync sockAddr = do
       (\(DictVersion codec)-> decodeTerm codec)
       (,)
       (\(DictVersion _) -> acceptEq)
-      (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) app) $ \_ serverAsync ->
-        wait serverAsync   -- block until async exception
+      (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) app)
+      (\_ serverAsync ->
+        wait serverAsync)   -- block until async exception
+      serverK
   where
     prng = mkSMGen 0
 
@@ -385,6 +422,11 @@ serverChainSync sockAddr = do
         (contramap show stdoutTracer)
          codecChainSync
         (ChainSync.chainSyncServerPeer (chainSyncServer prng))
+
+    serverK _ rspFn = do
+        let (MiniProtocolResponderControl csResult) = rspFn ChainSync2
+
+        void $ atomically $ csResult
 
 
 codecChainSync :: ( CBOR.Serialise (HeaderHash block)
@@ -523,6 +565,14 @@ clientBlockFetch sockAddrs = do
                                  AF.headPoint currentChain')
           chainSelection fingerprint'
 
+        clientK ctrlFn _ = do
+            let (MiniProtocolInitiatorControl csRelease) = ctrlFn ChainSync3
+                (MiniProtocolInitiatorControl bfRelease) = ctrlFn BlockFetch3
+
+            (csResult, bfResult) <- atomically $ (,) <$> csRelease <*> bfRelease
+            void $ atomically $ csResult *> bfResult
+
+
     peerAsyncs <- sequence
                     [ async $
                         connectToNode
@@ -534,6 +584,7 @@ clientBlockFetch sockAddrs = do
                           (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) app)
                           Nothing
                           (mkLocalSocketAddrInfo sockAddr)
+                          clientK
                     | sockAddr <- sockAddrs ]
 
     fetchAsync <- async $
@@ -574,8 +625,10 @@ serverBlockFetch sockAddr = do
       (\(DictVersion codec)-> decodeTerm codec)
       (,)
       (\(DictVersion _) -> acceptEq)
-      (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) app) $ \_ serverAsync ->
-        wait serverAsync   -- block until async exception
+      (simpleSingletonVersions (0::Int) (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) app)
+      (\_ serverAsync ->
+        wait serverAsync)   -- block until async exception
+      serverK
   where
     prng = mkSMGen 0
 
@@ -595,6 +648,13 @@ serverBlockFetch sockAddr = do
         (contramap show stdoutTracer)
          codecBlockFetch
         (BlockFetch.blockFetchServerPeer (blockFetchServer prng))
+
+    serverK _ rspFn = do
+        let (MiniProtocolResponderControl csResult) = rspFn ChainSync3
+            (MiniProtocolResponderControl bfResult) = rspFn BlockFetch3
+
+        void $ atomically $ csResult *> bfResult
+
 
 codecBlockFetch :: Codec (BlockFetch.BlockFetch Block)
                          CBOR.DeserialiseFailure

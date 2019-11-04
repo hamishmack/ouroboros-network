@@ -127,8 +127,22 @@ demo chain0 updates = do
                                               encode decode)
                     (ChainSync.chainSyncServerPeer server)
 
-    _ <- async $ Mx.runMuxWithPipes activeTracer "producer" (toApplication producerApp) hndRead1 hndWrite2
-    _ <- async $ Mx.runMuxWithPipes activeTracer "consumer" (toApplication consumerApp) hndRead2 hndWrite1
+        consumerK ctrlFn _ = do
+            let (Mx.MiniProtocolInitiatorControl release) = ctrlFn ChainSync
+
+            result <- atomically $ release
+
+            _ <- atomically $ result
+            return ()
+
+        producerK _ rspFn = do
+            let (Mx.MiniProtocolResponderControl result) = rspFn ChainSync
+
+            _ <- atomically $ result
+            return ()
+
+    _ <- async $ Mx.runMuxWithPipes activeTracer "producer" (toApplication producerApp) hndRead1 hndWrite2 producerK
+    _ <- async $ Mx.runMuxWithPipes activeTracer "consumer" (toApplication consumerApp) hndRead2 hndWrite1 consumerK
 
     void $ fork $ sequence_
         [ do threadDelay 10e-4 -- 1 milliseconds, just to provide interest

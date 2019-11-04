@@ -60,7 +60,8 @@ import qualified Network.Socket as Socket
 
 import           Control.Monad.Class.MonadSTM
 
-import           Network.Mux.Types (ProtocolEnum(..), MiniProtocolLimits (..), WithMuxBearer, MuxTrace)
+import           Network.Mux.Types ( ProtocolEnum(..), MiniProtocolLimits (..), WithMuxBearer, MuxTrace
+                                   , MiniProtocolInitiatorControl, MiniProtocolResponderControl)
 import           Network.Mux.Interface
 
 import           Ouroboros.Network.Magic
@@ -158,7 +159,6 @@ nodeToNodeCodecCBORTerm = CodecCBORTerm {encodeTerm, decodeTerm}
                                | otherwise                 = Left $ T.pack $ "networkMagic out of bound: " <> show x
       decodeTerm t             = Left $ T.pack $ "unknown encoding: " ++ show t
 
-
 -- | A specialised version of @'Ouroboros.Network.Socket.connectToNode'@.
 --
 connectTo
@@ -171,6 +171,7 @@ connectTo
               (OuroborosApplication InitiatorApp peerid NodeToNodeProtocols IO BL.ByteString a b)
   -> Maybe Socket.AddrInfo
   -> Socket.AddrInfo
+  -> ((NodeToNodeProtocols -> MiniProtocolInitiatorControl IO a) -> (NodeToNodeProtocols -> MiniProtocolResponderControl IO b) -> IO ())
   -> IO ()
 connectTo =
   connectToNode
@@ -189,6 +190,7 @@ connectTo_V1
   -> (OuroborosApplication InitiatorApp peerid NodeToNodeProtocols IO BL.ByteString a b)
   -> Maybe Socket.AddrInfo
   -> Socket.AddrInfo
+  -> ((NodeToNodeProtocols -> MiniProtocolInitiatorControl IO a) -> (NodeToNodeProtocols -> MiniProtocolResponderControl IO b) -> IO ())
   -> IO ()
 connectTo_V1 muxTracer handshakeTracer peeridFn versionData application localAddr remoteAddr =
     connectTo
@@ -215,8 +217,9 @@ withServer
   -> (forall vData. DictVersion vData -> vData -> vData -> Accept)
   -> Versions NodeToNodeVersion DictVersion (OuroborosApplication appType peerid NodeToNodeProtocols IO BL.ByteString a b)
   -> (Async () -> IO t)
+  -> ((NodeToNodeProtocols -> MiniProtocolInitiatorControl IO a) -> (NodeToNodeProtocols -> MiniProtocolResponderControl IO b) -> IO ())
   -> IO t
-withServer muxTracer handshakeTracer tbl addr peeridFn acceptVersion versions k =
+withServer muxTracer handshakeTracer tbl addr peeridFn acceptVersion versions k muxK =
   withServerNode
     muxTracer
     handshakeTracer
@@ -228,6 +231,7 @@ withServer muxTracer handshakeTracer tbl addr peeridFn acceptVersion versions k 
     acceptVersion
     versions
     (\_ -> k)
+    muxK
 
 
 -- | Like 'withServer' but specific to 'NodeToNodeV_1'.
@@ -243,8 +247,9 @@ withServer_V1
   -> NodeToNodeVersionData
   -> (OuroborosApplication appType peerid NodeToNodeProtocols IO BL.ByteString x y)
   -> (Async () -> IO t)
+  -> ((NodeToNodeProtocols -> MiniProtocolInitiatorControl IO x) -> (NodeToNodeProtocols -> MiniProtocolResponderControl IO y) -> IO ())
   -> IO t
-withServer_V1 muxTracer handshakeTracer tbl addr peeridFn versionData application k =
+withServer_V1 muxTracer handshakeTracer tbl addr peeridFn versionData application k muxK =
     withServer
       muxTracer handshakeTracer tbl addr peeridFn
       (\(DictVersion _) -> acceptEq)
@@ -254,6 +259,7 @@ withServer_V1 muxTracer handshakeTracer tbl addr peeridFn versionData applicatio
           (DictVersion nodeToNodeCodecCBORTerm)
           application)
       k
+      muxK
 
 
 -- | 'ipSubscriptionWorker' which starts given application versions on each
@@ -283,6 +289,7 @@ ipSubscriptionWorker
           peerid
           NodeToNodeProtocols
           IO BL.ByteString x y)
+    -> ((NodeToNodeProtocols -> MiniProtocolInitiatorControl IO x) -> (NodeToNodeProtocols -> MiniProtocolResponderControl IO y) -> IO ())
     -> IO void
 ipSubscriptionWorker
   subscriptionTracer
@@ -294,6 +301,7 @@ ipSubscriptionWorker
   connectionAttemptDelay
   ips
   versions
+  muxK
     = Subscription.ipSubscriptionWorker
         subscriptionTracer
         tbl
@@ -307,7 +315,8 @@ ipSubscriptionWorker
           muxTracer
           handshakeTracer
           peeridFn
-          versions)
+          versions
+          muxK)
 
 
 -- | Like 'ipSubscriptionWorker' but specific to 'NodeToNodeV_1'.
@@ -330,6 +339,7 @@ ipSubscriptionWorker_V1
           peerid
           NodeToNodeProtocols
           IO BL.ByteString x y)
+    -> ((NodeToNodeProtocols -> MiniProtocolInitiatorControl IO x) -> (NodeToNodeProtocols -> MiniProtocolResponderControl IO y) -> IO ())
     -> IO void
 ipSubscriptionWorker_V1
   subscriptionTracer
@@ -342,6 +352,7 @@ ipSubscriptionWorker_V1
   ips
   versionData
   application
+  muxK
     = ipSubscriptionWorker
         subscriptionTracer
         muxTracer
@@ -356,6 +367,7 @@ ipSubscriptionWorker_V1
           versionData
           (DictVersion nodeToNodeCodecCBORTerm)
           application)
+        muxK
 
 
 -- | 'dnsSubscriptionWorker' which starts given application versions on each
@@ -385,6 +397,7 @@ dnsSubscriptionWorker
           peerid
           NodeToNodeProtocols
           IO BL.ByteString x y)
+    -> ((NodeToNodeProtocols -> MiniProtocolInitiatorControl IO x) -> (NodeToNodeProtocols -> MiniProtocolResponderControl IO y) -> IO ())
     -> IO void
 dnsSubscriptionWorker
   subscriptionTracer
@@ -396,7 +409,8 @@ dnsSubscriptionWorker
   localAddresses
   connectionAttemptDelay
   dst
-  versions =
+  versions
+  muxK =
     Subscription.dnsSubscriptionWorker
       subscriptionTracer
       dnsTracer
@@ -411,7 +425,8 @@ dnsSubscriptionWorker
         muxTracer
         handshakeTracer
         peeridFn
-        versions)
+        versions
+        muxK)
 
 
 -- | Like 'dnsSubscriptionWorker' but specific to 'NodeToNodeV_1'.
@@ -434,6 +449,7 @@ dnsSubscriptionWorker_V1
           peerid
           NodeToNodeProtocols
           IO BL.ByteString x y)
+    -> ((NodeToNodeProtocols -> MiniProtocolInitiatorControl IO x) -> (NodeToNodeProtocols -> MiniProtocolResponderControl IO y) -> IO ())
     -> IO void
 dnsSubscriptionWorker_V1
   subscriptionTracer
@@ -446,7 +462,8 @@ dnsSubscriptionWorker_V1
   connectionAttemptDelay
   dst
   versionData
-  application =
+  application
+  muxK =
      dnsSubscriptionWorker
       subscriptionTracer
       dnsTracer
@@ -462,3 +479,4 @@ dnsSubscriptionWorker_V1
           versionData
           (DictVersion nodeToNodeCodecCBORTerm)
           application)
+      muxK

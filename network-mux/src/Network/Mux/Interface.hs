@@ -21,12 +21,16 @@ module Network.Mux.Interface
   , responderApplication
   , ProtocolEnum (..)
   , MiniProtocolLimits (..)
+  , MiniProtocolInitiatorControl (..)
+  , MiniProtocolResponderControl (..)
   , TraceLabelPeer (..)
   ) where
 
 import           Data.Void (Void)
 
 import           Network.Mux.Types ( MiniProtocolLimits (..)
+                                   , MiniProtocolInitiatorControl (..)
+                                   , MiniProtocolResponderControl (..)
                                    , ProtocolEnum (..)
                                    )
 import           Network.Mux.Channel
