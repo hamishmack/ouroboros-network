@@ -13,6 +13,8 @@ import           Data.List (nub)
 import           Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.Map.Strict as Map
 import           Data.Map.Strict (Map)
+import qualified Data.Set as Set
+import           Data.Set (Set)
 
 import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadTime
@@ -168,9 +170,37 @@ instance Arbitrary GovernorMockEnvironment where
 
 instance Arbitrary PeerGraph where
   arbitrary = sized $ \sz -> do
-    n <- choose (0, sz)
-    let addrs = map MockPeerAddr [0..n-1]
-    edges <- 
+      numNodes <- choose (0, sz)
+      numEdges <- choose (0, numNodes * numNodes `div` 2)
+      edges <- vectorOf numEdges $
+                 (,) <$> choose (0, numNodes-1)
+                     <*> choose (0, numNodes-1)
+      let addrs = map MockPeerAddr [0..numNodes-1]
+      nodes <- vectorOf numNodes (gossipScript addrs 0)
+      let adjacency = Map.fromListWith (<>)
+                        [ (from, Set.singleton (MockPeerAddr to))
+                        | (from, to) <- edges ]
+          graph     = [ (node, MockPeerAddr n, Set.toList (adjacency Map.! n))
+                      | (node, n) <- zip nodes [0..] ]
+      return (PeerGraph graph)
+    where
+      gossipScript peers n =
+        GossipScript <$> frequency [ (1, pure Nothing)
+                                   , (4, Just <$> selectPeers peers) ]
+                     <*> arbitrary
+                     <*> case n of
+                           0 -> pure Nothing 
+                           _ -> Just <$> gossipScript peers (n-1)
+
+      selectPeers peers = do
+        picked <- vectorOf (length peers) arbitrary
+        return [ peer | (peer, True) <- zip peers picked ]
+
+
+instance Arbitrary GossipTime where
+  arbitrary = frequency [ (2, pure GossipTimeQuick)
+                        , (2, pure GossipTimeSlow)
+                        , (1, pure GossipTimeTimeout) ]
 
 instance Arbitrary PeerSelectionTargets where
   arbitrary = undefined
