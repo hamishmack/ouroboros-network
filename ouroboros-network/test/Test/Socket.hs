@@ -207,8 +207,8 @@ prop_socket_send_recv :: Socket.AddrInfo
                       -> IO Bool
 prop_socket_send_recv initiatorAddr responderAddr f xs = do
 
-    cv <- newEmptyTMVarM :: IO (StrictTMVar IO [Int])
-    sv <- newEmptyTMVarM :: IO (StrictTMVar IO Int)
+    cv <- newEmptyTMVarM
+    sv <- newEmptyTMVarM
     tbl <- newConnectionTable
 
     let -- Server Node; only req-resp server

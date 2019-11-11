@@ -42,7 +42,6 @@ import           Control.Monad.Class.MonadThrow
 import           Control.Monad.Class.MonadTime
 import           Control.Monad.Class.MonadTimer
 import           Control.Monad.IOSim (runSimStrictShutdown)
-import           Control.Tracer (nullTracer)
 
 import           Test.Mux.ReqResp
 
@@ -186,6 +185,7 @@ instance Arbitrary DummyPayload where
     arbitrary = do
         n <- choose (1, 128)
         len <- oneof [ return n
+                     , return $ n * 8
                      , return $ defaultMiniProtocolLimit - n - cborOverhead
                      , choose (1, defaultMiniProtocolLimit - cborOverhead)
                      ]
@@ -208,9 +208,9 @@ instance Arbitrary DummyTrace where
         len <- choose (1, 20)
         DummyTrace <$> vector len
     shrink (DummyTrace a) =
-        let a' = shrink a in
-        if null a' then []
-                   else map DummyTrace a'
+        let a' = shrink a
+            a'' = filter (not . null) a' in
+        map DummyTrace a''
 
 -- | A sequence of DymmyTraces
 newtype DummyRun = DummyRun [DummyTrace] deriving Show
@@ -220,9 +220,9 @@ instance Arbitrary DummyRun where
         len <- choose (1, 4)
         DummyRun <$> vector len
     shrink (DummyRun a) =
-        let a' = shrink a in
-        if null a' then []
-                   else map DummyRun a'
+        let a' = shrink a
+            a'' = filter (not . null) a' in
+        map DummyRun a''
 
 data InvalidSDU = InvalidSDU {
       isTimestamp  :: !Mx.RemoteClockModel
@@ -345,20 +345,15 @@ instance Arbitrary Uneven where
 --
 prop_mux_snd_recv :: DummyRun
                   -> Property
-prop_mux_snd_recv (DummyRun []) = property True
-prop_mux_snd_recv (DummyRun [DummyTrace []]) = property True
-prop_mux_snd_recv (DummyRun messages) = ioProperty $ do
+prop_mux_snd_recv messages = ioProperty $ do
     let sduLen = 1260
 
     client_w <- atomically $ newTBQueue 10
     client_r <- atomically $ newTBQueue 10
     serverResultVar <- newEmptyTMVarM
     clientResultVar <- newEmptyTMVarM
-    clientQ <- atomically newTQueue
-    serverQ <- atomically newTQueue
-    mapM_ (\msgs -> atomically $ writeTQueue clientQ msgs *>
-                                 writeTQueue serverQ msgs) messages
 
+    (clientQ, serverQ, clientApp, serverApp) <- setupMiniReqRsp (return ()) messages
     let server_w = client_r
         server_r = client_w
 
@@ -368,14 +363,13 @@ prop_mux_snd_recv (DummyRun messages) = ioProperty $ do
         clientCtrl (Mx.MiniProtocolInitiatorControl release) = do
             result <- atomically release
 
-            (clientR, release') <- atomically result
+            clientR <- atomically result
             atomically $ putTMVar clientResultVar clientR
             serverR <- atomically $ takeTMVar serverResultVar
             isEmpty <- atomically $ isEmptyTQueue clientQ
             if not isEmpty && clientR && serverR
-                then clientCtrl release'
+                then clientCtrl $ Mx.MiniProtocolInitiatorControl release
                 else atomically $ putTMVar clientResultVar clientR
-
 
         serverK _ rspFn = serverCtrl $ rspFn ReqResp1
 
@@ -392,10 +386,10 @@ prop_mux_snd_recv (DummyRun messages) = ioProperty $ do
 
     clientAsync <-
       async $ Mx.runMuxWithQueues activeTracer "client" (Mx.MuxInitiatorApplication
-        $ \_ ReqResp1 -> clientApp clientQ) client_w client_r sduLen Nothing clientK
+        $ \_ ReqResp1 -> clientApp) client_w client_r sduLen Nothing clientK
     serverAsync <-
       async $ Mx.runMuxWithQueues activeTracer "server" (Mx.MuxResponderApplication
-        $ \_ ReqResp1 -> serverApp serverQ) server_w server_r sduLen Nothing serverK
+        $ \_ ReqResp1 -> serverApp) server_w server_r sduLen Nothing serverK
 
     r <- waitBoth clientAsync serverAsync
     case r of
@@ -403,6 +397,21 @@ prop_mux_snd_recv (DummyRun messages) = ioProperty $ do
          (_, Just _) -> return $ property False
          _           -> property <$> verify
 
+-- | Create client and server command queues, a MiniProtocolDescription for the client
+-- side and a MiniProtocolDescription for the server side for a RequestResponce
+-- protocol.
+setupMiniReqRsp :: IO ()     -- | Action performed by responder before processing the response
+                 -> DummyRun  -- | Trace of messages
+                 -> IO ( TQueue IO DummyTrace
+                       , TQueue IO DummyTrace
+                       , Mx.Channel IO -> IO Bool
+                       , Mx.Channel IO -> IO Bool)
+setupMiniReqRsp serverAction (DummyRun messages) = do
+    clientQ <- atomically newTQueue
+    serverQ <- atomically newTQueue
+    mapM_ (\msgs -> atomically $ writeTQueue clientQ msgs *>
+                                 writeTQueue serverQ msgs) messages
+    return (clientQ, serverQ, clientApp clientQ, serverApp serverQ)
   where
     reqRespServer :: [DummyPayload]
                   -> [DummyPayload]
@@ -410,7 +419,7 @@ prop_mux_snd_recv (DummyRun messages) = ioProperty $ do
     reqRespServer requests = go []
       where
         go reqs (resp:resps) = ReqRespServer {
-            recvMsgReq  = \req -> return (resp, go (req:reqs) resps),
+            recvMsgReq  = \req -> serverAction >> return (resp, go (req:reqs) resps),
             recvMsgDone = pure $ reverse reqs == requests
           }
         go reqs [] = ReqRespServer {
@@ -440,52 +449,6 @@ prop_mux_snd_recv (DummyRun messages) = ioProperty $ do
         (requests, responses) <- atomically $ unzip . unDummyTrace <$> readTQueue q
         runServer nullTracer serverChan (reqRespServer requests responses)
 
--- | Create a verification function, a MiniProtocolDescription for the client
--- side and a MiniProtocolDescription for the server side for a RequestResponce
--- protocol.
---
-setupMiniReqRsp :: IO ()              -- | Action performed by responder before processing the response
-                -> DummyTrace         -- | Trace of messages
-                -> IO ( Mx.Channel IO -> IO Bool
-                      , Mx.Channel IO -> IO Bool
-                      )
-setupMiniReqRsp serverAction (DummyTrace msgs) = do
-    return ( clientApp
-           , serverApp
-           )
-  where
-    requests  = map fst msgs
-    responses = map snd msgs
-
-    reqRespServer :: [DummyPayload]
-                  -> ReqRespServer DummyPayload DummyPayload IO Bool
-    reqRespServer = go []
-      where
-        go reqs (resp:resps) = ReqRespServer {
-            recvMsgReq  = \req -> serverAction >> return (resp, go (req:reqs) resps),
-            recvMsgDone = pure $ reverse reqs == requests
-          }
-        go reqs [] = ReqRespServer {
-            recvMsgReq  = error "server out of replies",
-            recvMsgDone = pure $ reverse reqs == requests
-          }
-
-
-    reqRespClient :: [DummyPayload]
-                  -> ReqRespClient DummyPayload DummyPayload IO Bool
-    reqRespClient = go []
-      where
-        go resps []         = SendMsgDone (pure $ reverse resps == responses)
-        go resps (req:reqs) = SendMsgReq req $ \resp -> return (go (resp:resps) reqs)
-
-    clientApp :: Mx.Channel IO
-              -> IO Bool
-    clientApp clientChan = runClient activeTracer clientChan (reqRespClient requests)
-
-    serverApp :: Mx.Channel IO
-              -> IO Bool
-    serverApp serverChan = runServer activeTracer serverChan (reqRespServer responses)
-
 waitOnAllClients :: StrictTVar IO Int
                  -> Int
                  -> IO ()
@@ -498,10 +461,11 @@ waitOnAllClients clientVar clientTot = do
 -- | Verify that it is possible to run two miniprotocols over the same bearer.
 -- Makes sure that messages are delivered to the correct miniprotocol in order.
 --
-prop_mux_2_minis :: DummyTrace
-                 -> DummyTrace
+prop_mux_2_minis :: DummyRun
+                 -> DummyRun
                  -> Property
-prop_mux_2_minis msgTrace0 msgTrace1 = ioProperty $ do
+
+prop_mux_2_minis msg0 msg1 = ioProperty $ do
     let sduLen = 14000
 
     client_w <- atomically $ newTBQueue 10
@@ -512,8 +476,8 @@ prop_mux_2_minis msgTrace0 msgTrace1 = ioProperty $ do
     let server_w = client_r
         server_r = client_w
 
-    (client_mp0, server_mp0) <- setupMiniReqRsp (return ()) msgTrace0
-    (client_mp1, server_mp1) <- setupMiniReqRsp (return ()) msgTrace1
+    (client_q0, server_q0, client_mp0, server_mp0) <- setupMiniReqRsp (return ()) msg0
+    (client_q1, server_q1, client_mp1, server_mp1) <- setupMiniReqRsp (return ()) msg1
 
     let clientApp _ ReqResp2 = client_mp0
         clientApp _ ReqResp3 = client_mp1
@@ -526,20 +490,42 @@ prop_mux_2_minis msgTrace0 msgTrace1 = ioProperty $ do
                 (Mx.MiniProtocolInitiatorControl release3) = ctrlFn ReqResp3
 
             (result2, result3) <- atomically $ (,) <$> release2 <*> release3
+            clientCtrl ctrlFn [(ReqResp2, client_q0, result2), (ReqResp3, client_q1, result3)]
 
-            atomically $ do
-                (r2, _ ) <- result2
-                (r3, _ ) <- result3
-                putTMVar clientResultVar $ r2 && r3
+        clientCtrl _ [] = do
+            atomically $ putTMVar clientResultVar True
+            void $ atomically $ readTMVar serverResultVar
 
-        serverK _ rspFn = do
-            let (Mx.MiniProtocolResponderControl result2) = rspFn ReqResp2
-                (Mx.MiniProtocolResponderControl result3) = rspFn ReqResp3
+        clientCtrl ctrlFn resultActions = do
 
-            atomically $ do
-                r2 <- result2
-                r3 <- result3
-                putTMVar serverResultVar $ r2 && r3
+            res <- atomically $ foldr (orElse . waitOnMiniProtocolClientResult) retry resultActions
+            case res of
+                 (_, _, False)       -> -- One miniprotocol failed
+                     atomically $ putTMVar clientResultVar False
+                 (ptcl, q, True) -> do -- One miniprotol finished, check if it should be restarted.
+                     isEmpty <- atomically $ isEmptyTQueue q
+                     if isEmpty
+                         then clientCtrl ctrlFn $ filter (\(mp,_,_) -> mp /= ptcl) resultActions
+                         else do
+                             let (Mx.MiniProtocolInitiatorControl restart) = ctrlFn ptcl
+                             void $ atomically restart
+                             clientCtrl ctrlFn resultActions
+
+        serverK _ rspFn = serverCtrl (Just $ rspFn ReqResp2) (Just $ rspFn ReqResp3)
+
+        serverCtrl :: Maybe (Mx.MiniProtocolResponderControl IO Bool)
+                   -> Maybe (Mx.MiniProtocolResponderControl IO Bool)
+                   -> IO ()
+        serverCtrl Nothing Nothing = do
+            atomically $ putTMVar serverResultVar True
+            void $ atomically $ readTMVar clientResultVar
+        serverCtrl result2_m result3_m = do
+            res <- atomically $ orElse (fetchServerResult ReqResp2 server_q0 result2_m) (fetchServerResult ReqResp3 server_q1 result3_m)
+            case res of
+                Just (_, False)       -> atomically $ putTMVar serverResultVar False
+                Just (ReqResp2, True) -> serverCtrl Nothing result3_m
+                Just (ReqResp3, True) -> serverCtrl result2_m Nothing
+                Nothing               -> serverCtrl result2_m result3_m
 
         verify = atomically $ (&&) <$> takeTMVar serverResultVar <*> takeTMVar clientResultVar
 
@@ -553,6 +539,21 @@ prop_mux_2_minis msgTrace0 msgTrace1 = ioProperty $ do
          (Just _, _) -> return $ property False
          (_, Just _) -> return $ property False
          _           -> property <$> verify
+
+  where
+    fetchServerResult :: ptcl -> TQueue IO e -> Maybe (Mx.MiniProtocolResponderControl IO Bool) -> STM IO (Maybe (ptcl, Bool))
+    fetchServerResult _ _ Nothing = retry
+    fetchServerResult ptcl queue (Just (Mx.MiniProtocolResponderControl action)) = do
+        !result <- action
+        isEmpty <- isEmptyTQueue queue
+        if isEmpty || not result then return $ Just (ptcl, result)
+                                 else return Nothing
+
+    waitOnMiniProtocolClientResult :: (TestProtocols2, TQueue IO e, STM IO Bool)
+                                   -> STM IO (TestProtocols2, TQueue IO e, Bool)
+    waitOnMiniProtocolClientResult (ptcl, q, fetchResult) = do
+            r <- fetchResult
+            return (ptcl, q, r)
 
 -- | Attempt to verify that capacity is diveded fairly between two active
 -- miniprotocols.  Two initiators send a request over two different
@@ -579,12 +580,12 @@ prop_mux_starvation (Uneven response0 response1) =
     let server_w = client_r
         server_r = client_w
 
-    (client_short, server_short) <-
+    (_, _, client_short, server_short) <-
         setupMiniReqRsp (waitOnAllClients activeMpsVar 2)
-                        $ DummyTrace [(request, response0)]
-    (client_long, server_long) <-
+                        $ DummyRun [DummyTrace [(request, response0)]]
+    (_, _, client_long, server_long) <-
         setupMiniReqRsp (waitOnAllClients activeMpsVar 2)
-                        $ DummyTrace [(request, response1)]
+                        $ DummyRun [DummyTrace [(request, response1)]]
 
     let clientApp _ ReqResp2 = client_short
         clientApp _ ReqResp3 = client_long
@@ -599,8 +600,8 @@ prop_mux_starvation (Uneven response0 response1) =
             (result2, result3) <- atomically $ (,) <$> release2 <*> release3
 
             atomically $ do
-                (r2, _ ) <- result2
-                (r3, _ ) <- result3
+                r2 <- result2
+                r3 <- result3
                 putTMVar clientResultVar $ r2 && r3
 
         serverK _ rspFn = do
@@ -777,7 +778,6 @@ prop_demux_sdu a = do
                         $ \_ rspFn -> do
                           let (Mx.MiniProtocolResponderControl result) = rspFn ptcl
                           void $ atomically result
-                          return ()
 
         return (server_r, said)
 

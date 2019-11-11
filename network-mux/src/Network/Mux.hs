@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE NamedFieldPuns      #-}
 {-# LANGUAGE FlexibleContexts    #-}
@@ -172,10 +171,9 @@ muxStart tracer peerid app bearer k = do
                 -- Signal to the miniprotocol that it is time to start.
                 putTMVar (fst $ tbl ! AppProtocolId mpdId) ()
                 return result
-            result  = do
+            result  =
                 -- Wait for the miniprotocol to finish.
-                a <- takeTMVar (snd $ tbl ! AppProtocolId mpdId)
-                return (a, MiniProtocolInitiatorControl release) in
+                takeTMVar (snd $ tbl ! AppProtocolId mpdId) in
         MiniProtocolInitiatorControl release
 
     -- Provide a STM action that is used to fetch the result from Responder miniprotocols.
@@ -184,7 +182,6 @@ muxStart tracer peerid app bearer k = do
                      -> MiniProtocolResponderControl m b
     mpsResponderCtrl (MiniProtocolResponderControlTable tbl) mpdId =
         MiniProtocolResponderControl $ takeTMVar (tbl ! AppProtocolId mpdId)
-
 
     mpsJob
       :: StrictTVar m Int
@@ -221,6 +218,7 @@ muxStart tracer peerid app bearer k = do
               , show mpdId ++ " Responder" )
             ]
 
+    -- Start and restart responder side miniprotocols on demand.
     mpsResponderBrooder
       :: HasResponder appType ~ True
       => PerMuxSharedState ptcl m
@@ -236,15 +234,15 @@ muxStart tracer peerid app bearer k = do
             buf <- readTVar (ingressQueue (dispatchTable pmss) (AppProtocolId mpdId) ModeResponder)
             when (buf == BL.empty)
                 retry
-            return ()
         -- Initiator is active, start the responder side
         traceWith tracer $ MuxTraceBrooderResponderHatch (AppProtocolId mpdId)
-        b <- (responderApplication rspApp) peerid mpdId channel
+        b <- responderApplication rspApp peerid mpdId channel
         -- Responder side exited, wait until we should hatch another responder
         traceWith tracer $ MuxTraceBrooderResponderDone (AppProtocolId mpdId)
         -- Propagate the miniprotocol result.
         atomically $ putTMVar (rtbl ! AppProtocolId mpdId) b
 
+    -- Start and restart initiator side miniprotocols on demand.
     mpsInitiatorBrooder
       :: HasInitiator appType ~ True
       => MiniProtocolInitiatorControlTable ptcl m a
@@ -257,7 +255,7 @@ muxStart tracer peerid app bearer k = do
         -- Wait for controller to signal that we should start the application
         void $ atomically $ takeTMVar (fst $ itbl ! AppProtocolId mpdId)
         traceWith tracer $ MuxTraceBrooderInitiatorHatch (AppProtocolId mpdId)
-        a <- (initiatorApplication reqApp) peerid mpdId channel
+        a <- initiatorApplication reqApp peerid mpdId channel
         traceWith tracer $ MuxTraceBrooderInitiatorDone (AppProtocolId mpdId)
         -- Propagate the miniprotocol result.
         atomically $ putTMVar (snd $ itbl ! AppProtocolId mpdId) a
@@ -322,7 +320,7 @@ muxChannel tracer pmss mid md cnt = do
         when (BL.length encoding > maximumMessageSize mid) $
             throwM $ MuxError MuxTooLargeMessage
                 (printf "Attempting to send a message of size %d on %s %s" (BL.length encoding)
-                        (show mid) (show $ md))
+                        (show mid) (show md))
                 callStack
         atomically $ modifyTVar cnt (+ 1)
         atomically $ putTMVar w encoding

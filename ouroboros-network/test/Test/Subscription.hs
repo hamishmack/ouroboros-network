@@ -99,7 +99,7 @@ instance Mx.MiniProtocolLimits TestProtocols2 where
 
 activeTracer :: Show a => Tracer IO a
 activeTracer = nullTracer
---activeTracer = _verboseTracer -- Dump log messages to stdout.
+-- activeTracer = _verboseTracer -- Dump log messages to stdout.
 
 --
 -- The list of all tests
@@ -521,7 +521,7 @@ prop_send_recv f xs first = ioProperty $ do
     let -- Server Node; only req-resp server
         responderApp :: OuroborosApplication ResponderApp (Socket.SockAddr, Socket.SockAddr) TestProtocols2 IO BL.ByteString Void Int
         responderApp = OuroborosResponderApplication $
-          \peerid ReqRespPr channel -> do
+          \peerid ReqRespPr channel ->
             runPeer (tagTrace "Responder" activeTracer)
                     ReqResp.codecReqResp
                     peerid
@@ -531,7 +531,7 @@ prop_send_recv f xs first = ioProperty $ do
         -- Client Node; only req-resp client
         initiatorApp :: OuroborosApplication InitiatorApp (Socket.SockAddr, Socket.SockAddr) TestProtocols2 IO BL.ByteString [Int] Void
         initiatorApp = OuroborosInitiatorApplication $
-          \peerid ReqRespPr channel -> do
+          \peerid ReqRespPr channel ->
             runPeer (tagTrace "Initiator" activeTracer)
                     ReqResp.codecReqResp
                     peerid
@@ -543,7 +543,7 @@ prop_send_recv f xs first = ioProperty $ do
 
             result <- atomically release
             atomically $ do
-                (r, _) <- result
+                r <- result
                 putTMVar cv r
             return ()
 
@@ -630,7 +630,7 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
     tblB <- newConnectionTable
 
     rrcfgA <- newReqRspCfg "A"
-    rrcfgB <- newReqRspCfg "X"
+    rrcfgB <- newReqRspCfg "B"
 
     a_aid <- async $ startPassiveServer
       tblA
@@ -656,7 +656,7 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
 
         intResult <- atomically intRelease
 
-        ((i, _), r) <- atomically $ (,) <$> intResult <*> rspResult
+        (i, r) <- atomically $ (,) <$> intResult <*> rspResult
         atomically $ putTMVar rrcClientVar i *> putTMVar rrcServerVar r
 
     muxKFailing ReqRspCfg {rrcServerVar, rrcClientVar} _ rspFn = do
@@ -671,23 +671,21 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
     appX :: ReqRspCfg -> OuroborosApplication InitiatorAndResponderApp (Socket.SockAddr, Socket.SockAddr) TestProtocols2 IO BL.ByteString [Int] Int
     appX ReqRspCfg {rrcTag} = OuroborosInitiatorAndResponderApplication
             -- Initiator
-            (\peerid ReqRespPr channel -> do
-             r <- runPeer (tagTrace (rrcTag ++ " Initiator") activeTracer)
+            (\peerid ReqRespPr channel ->
+             runPeer (tagTrace (rrcTag ++ " Initiator") activeTracer)
                          ReqResp.codecReqResp
                          peerid
                          channel
                          (ReqResp.reqRespClientPeer (ReqResp.reqRespClientMap xs))
-             return r
             )
             -- Responder
-            (\peerid ReqRespPr channel -> do
-             r <- runPeer (tagTrace (rrcTag ++ " Responder") activeTracer)
+            (\peerid ReqRespPr channel ->
+             runPeer (tagTrace (rrcTag ++ " Responder") activeTracer)
                          ReqResp.codecReqResp
                          peerid
                          channel
                          (ReqResp.reqRespServerPeer (ReqResp.reqRespServerMapAccumL
                            (\a -> pure . f a) 0))
-             return r
             )
 
     startPassiveServer tbl responderAddr localAddrVar rrcfg = withServerNode
@@ -702,9 +700,8 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
         (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) (appX rrcfg))
         (\localAddr _ -> do
           atomically $ putTMVar localAddrVar localAddr
-          r <- atomically $ (,) <$> takeTMVar (rrcServerVar rrcfg)
-                                <*> takeTMVar (rrcClientVar rrcfg)
-          return r)
+          atomically $ (,) <$> takeTMVar (rrcServerVar rrcfg)
+                           <*> takeTMVar (rrcClientVar rrcfg))
         (muxK rrcfg)
 
     startActiveServer tbl responderAddr localAddrVar remoteAddrVar rrcfg = withServerNode
@@ -716,7 +713,7 @@ prop_send_recv_init_and_rsp f xs = ioProperty $ do
         (\(DictVersion codec) -> decodeTerm codec)
         (,)
         (\(DictVersion _) -> acceptEq)
-        ((simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) (appX rrcfg)))
+        (simpleSingletonVersions NodeToNodeV_1 (NodeToNodeVersionData $ NetworkMagic 0) (DictVersion nodeToNodeCodecCBORTerm) (appX rrcfg))
         (\localAddr _ -> do
           atomically $ putTMVar localAddrVar localAddr
           remoteAddr <- atomically $ takeTMVar remoteAddrVar
@@ -770,4 +767,5 @@ instance (Show a) => Show (WithTag a) where
 
 tagTrace :: String -> Tracer IO (WithTag a) -> Tracer IO a
 tagTrace tag tr = Tracer $ \s -> traceWith tr $ WithTag tag s
+
 
