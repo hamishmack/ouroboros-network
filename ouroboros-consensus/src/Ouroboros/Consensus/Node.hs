@@ -30,6 +30,7 @@ module Ouroboros.Consensus.Node
 
 import qualified Codec.CBOR.Read as CBOR
 import qualified Codec.CBOR.Term as CBOR
+import           Control.Applicative ((<|>))
 import           Control.Monad (forM, void, forever)
 import           Control.Monad.Class.MonadSTM.Strict
 import           Control.Tracer
@@ -282,6 +283,10 @@ data RunNetworkArgs peer blk = RunNetworkArgs
     -- ^ Network protocol magic, differentiates between mainnet, staging and testnetworks.
   }
 
+-- | Result of waiting on a list of miniprotocols to finish.
+data MiniProtocolClientResult = MpcRestart NodeToNodeProtocols
+                              | MpcResult NodeToNodeProtocols
+
 initNetwork
   :: forall blk peer.
      (RunNode blk, Ord peer)
@@ -317,43 +322,76 @@ initNetwork registry nodeArgs kernel RunNetworkArgs{..} = do
     let threads = localServer : ipSubscriptions : dnsSubscriptions ++ peerServers
     void $ waitAnyThread threads
   where
-    nodeToNodeClientCtrl :: ((NodeToNodeProtocols -> MiniProtocolInitiatorControl IO a)
+    nodeToNodeClientCtrl :: (NodeToNodeProtocols -> MiniProtocolInitiatorControl IO ())
                          -> (NodeToNodeProtocols -> MiniProtocolResponderControl IO b)
-                         -> IO ())
+                         -> IO ()
     nodeToNodeClientCtrl ctrlFn _ = do
-        let (MiniProtocolInitiatorControl csRelease) = ctrlFn ChainSyncWithHeadersPtcl
-            (MiniProtocolInitiatorControl bfRelease) = ctrlFn BlockFetchPtcl
-            (MiniProtocolInitiatorControl txRelease) = ctrlFn TxSubmissionPtcl
+        startQ <- atomically $ newTBQueue 3
+        atomically $ do
+            writeTBQueue startQ ChainSyncWithHeadersPtcl
+            writeTBQueue startQ BlockFetchPtcl
+            writeTBQueue startQ TxSubmissionPtcl
+        clientK startQ []
 
-        -- Signal to all MiniProtocols to start
-        csResult <- atomically $ csRelease
-        bfResult <- atomically $ bfRelease
-        txResult <- atomically $ txRelease
+      where
+        clientK :: TBQueue IO NodeToNodeProtocols -> [(NodeToNodeProtocols, STM IO ())] -> IO ()
+        clientK restartQ resultActions = do
+            cr <- atomically $ waitOnRestartQueue restartQ
+                  <|> foldr (orElse . waitOnMiniProtocolClientResult) retry resultActions
+            case cr of
+                 (MpcRestart ptcl) -> do
+                     let (MiniProtocolInitiatorControl restart) = ctrlFn ptcl
+                     resultAction <- atomically restart
+                     clientK restartQ ((ptcl, resultAction):resultActions)
+                 (MpcResult ptcl) -> do
+                     -- The return type currently is (), but we could act on the result here
 
-        -- XXX wait forever
-        forever $ threadDelay 1
+                     -- Schedule a restart of the miniprotocol in the future
+                     void $ async $ delayRestart restartQ ptcl
+                     clientK restartQ $ filter (\(mp, _) -> mp /= ptcl) resultActions
 
-    nodeToNodeServerCtrl :: ((NodeToNodeProtocols -> MiniProtocolInitiatorControl IO a)
-                         -> (NodeToNodeProtocols -> MiniProtocolResponderControl IO b)
-                         -> IO ())
-    nodeToNodeServerCtrl _ rspFn  = do
-        let (MiniProtocolResponderControl csResult) = rspFn ChainSyncWithHeadersPtcl
-            (MiniProtocolResponderControl bfResult) = rspFn BlockFetchPtcl
-            (MiniProtocolResponderControl txResult) = rspFn TxSubmissionPtcl
+        delayRestart :: TBQueue IO NodeToNodeProtocols -> NodeToNodeProtocols -> IO ()
+        delayRestart q ptcl = do
+            threadDelay 60 -- Wait for 1 minute before restarting
+            atomically $ writeTBQueue q ptcl
 
-        -- XXX wait forever
-        forever $ threadDelay 1
+        waitOnRestartQueue :: TBQueue IO NodeToNodeProtocols -> STM IO MiniProtocolClientResult
+        waitOnRestartQueue q = do
+            ptcl <- readTBQueue q
+            return $ MpcRestart ptcl
 
-    nodeToClientServerCtrl :: ((NodeToClientProtocols -> MiniProtocolInitiatorControl IO a)
-                           -> (NodeToClientProtocols -> MiniProtocolResponderControl IO b)
-                           -> IO ())
-    nodeToClientServerCtrl _ rspFn  = do
-        let (MiniProtocolResponderControl csResult) = rspFn ChainSyncWithBlocksPtcl
-            (MiniProtocolResponderControl txResult) = rspFn LocalTxSubmissionPtcl
+        waitOnMiniProtocolClientResult :: (NodeToNodeProtocols, STM IO a)
+                                       -> STM IO MiniProtocolClientResult
+        waitOnMiniProtocolClientResult (ptcl, fetchResult) = do
+            void fetchResult
+            return $ MpcResult ptcl
 
-        -- wait forever
-        forever $ threadDelay 1
+    nodeToNodeServerCtrl :: (NodeToNodeProtocols -> MiniProtocolInitiatorControl IO a)
+                         -> (NodeToNodeProtocols -> MiniProtocolResponderControl IO ())
+                         -> IO ()
+    nodeToNodeServerCtrl _ rspFn  = forever $
+        -- Fetch, but ignore the result of any miniprotocol so that it can
+        -- be restarted incase the initiator decides to talk to us again.
+        void $ atomically $ fetchServerResult ChainSyncWithHeadersPtcl
+                        <|> fetchServerResult BlockFetchPtcl
+                        <|> fetchServerResult TxSubmissionPtcl
+      where
+        fetchServerResult :: NodeToNodeProtocols -> STM IO ()
+        fetchServerResult ptcl =
+            let (MiniProtocolResponderControl action) = rspFn ptcl in
+            action
 
+    nodeToClientServerCtrl :: (NodeToClientProtocols -> MiniProtocolInitiatorControl IO a)
+                           -> (NodeToClientProtocols -> MiniProtocolResponderControl IO ())
+                           -> IO ()
+    nodeToClientServerCtrl _ rspFn  = forever $
+        void $ atomically $ fetchServerResult ChainSyncWithBlocksPtcl
+                        <|> fetchServerResult LocalTxSubmissionPtcl
+      where
+        fetchServerResult :: NodeToClientProtocols -> STM IO ()
+        fetchServerResult ptcl =
+            let (MiniProtocolResponderControl action) = rspFn ptcl in
+            action
 
     networkApps :: NetworkApps peer
     networkApps = consensusNetworkApps
