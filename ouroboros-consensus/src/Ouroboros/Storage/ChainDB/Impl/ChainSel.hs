@@ -51,6 +51,7 @@ import           Ouroboros.Consensus.Block (BlockProtocol, GetHeader (..),
                      toIsEBB)
 import           Ouroboros.Consensus.Ledger.Abstract
 import           Ouroboros.Consensus.Protocol.Abstract
+import           Ouroboros.Consensus.Util.AnchoredFragment
 import           Ouroboros.Consensus.Util.IOLike
 import           Ouroboros.Consensus.Util.STM (WithFingerprint (..))
 

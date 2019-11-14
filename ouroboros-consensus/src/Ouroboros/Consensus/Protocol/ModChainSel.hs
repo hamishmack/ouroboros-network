@@ -28,19 +28,14 @@ import           Ouroboros.Network.AnchoredFragment (AnchoredFragment)
 
 import           Ouroboros.Consensus.Protocol.Abstract
 
+-- | Redefine the chain selection part of 'OuroborosTag'
 class OuroborosTag p => ChainSelection p s where
   type family CanSelect' p :: * -> Constraint
 
-  preferCandidate' :: CanSelect' p b
-                   => proxy s
-                   -> NodeConfig p
-                   -> AnchoredFragment b      -- ^ Our chain
-                   -> AnchoredFragment b      -- ^ Candidate
-                   -> Bool
-  compareCandidates' :: CanSelect' p b
-                     => proxy s
-                     -> NodeConfig p
-                     -> AnchoredFragment b -> AnchoredFragment b -> Ordering
+  preferCandidate'   :: CanSelect' p hdr
+                     => proxy s -> NodeConfig p -> hdr -> hdr -> Bool
+  compareCandidates' :: CanSelect' p hdr
+                     => proxy s -> NodeConfig p -> hdr -> hdr -> Ordering
 
 data ModChainSel p s
 

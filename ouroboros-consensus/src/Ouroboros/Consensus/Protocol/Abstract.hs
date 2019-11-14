@@ -32,6 +32,7 @@ module Ouroboros.Consensus.Protocol.Abstract (
 import           Control.Monad.Except
 import           Control.Monad.State
 import           Crypto.Random (MonadRandom (..))
+import           Data.Function (on)
 import           Data.Functor.Identity
 import           Data.Kind (Constraint)
 import           Data.Typeable (Typeable)
@@ -40,11 +41,9 @@ import           GHC.Generics (Generic)
 
 import           Cardano.Prelude (NoUnexpectedThunks)
 
-import           Ouroboros.Network.AnchoredFragment (AnchoredFragment (..))
 import           Ouroboros.Network.Block (HasHeader (..), SlotNo (..))
 import           Ouroboros.Network.Point (WithOrigin)
 
-import qualified Ouroboros.Consensus.Util.AnchoredFragment as AF
 import           Ouroboros.Consensus.Util.Random
 
 import           GHC.Stack
@@ -133,29 +132,31 @@ class ( Show (ChainState    p)
 
   -- | Do we prefer the candidate chain over ours?
   --
-  -- Returns 'True' when we prefer the candidate over our chain.
+  -- Should return 'True' when we prefer the candidate over our chain.
   --
-  -- PRECONDITION: the candidate chain does not extend into the future.
+  -- We pass only the tips of the chains; for all consensus protocols we are
+  -- interested in, this provides sufficient context. (Ouroboros Genesis is
+  -- the only exception, but we will handle the genesis rule elsewhere.)
   --
-  -- Note: we make no assumptions about the anchor points of the fragments.
+  -- PRECONDITIONS:
   --
-  -- Note: we do not assume that the candidate fragments fork less than @k@
-  -- blocks back.
+  -- * The candidate chain does not extend into the future.
+  -- * The candidate must intersect with our chain within @k@ blocks from
+  --   our tip.
+  --
+  -- NOTE: An assumption that is quite deeply ingrained in the design of the
+  -- consensus layer is that if a chain can be extended, it always should (e.g.,
+  -- see the chain database spec in @ChainDB.md@). This means that any chain
+  -- is always preferred over the empty chain, and 'preferCandidate' does not
+  -- need (indeed, cannot) be called if our current chain is empty.
   preferCandidate :: CanSelect p hdr
                   => NodeConfig p
-                  -> AnchoredFragment hdr      -- ^ Our chain
-                  -> AnchoredFragment hdr      -- ^ Candidate
+                  -> hdr      -- ^ Our chain
+                  -> hdr      -- ^ Candidate
                   -> Bool
 
   -- | Compare two candidates, both of which we prefer to our own chain
-  --
-  -- Note: we make no assumptions about the anchor points of the fragments.
-  --
-  -- Note: we do not assume that the candidate fragments fork less than @k@
-  -- blocks back.
-  compareCandidates :: CanSelect p hdr
-                    => NodeConfig p
-                    -> AnchoredFragment hdr -> AnchoredFragment hdr -> Ordering
+  compareCandidates :: CanSelect p hdr => NodeConfig p -> hdr -> hdr -> Ordering
 
   -- | Check if a node is the leader
   checkIsLeader :: (HasNodeState p m, MonadRandom m)
@@ -216,16 +217,15 @@ class ( Show (ChainState    p)
 
   default preferCandidate :: HasHeader hdr
                           => NodeConfig p
-                          -> AnchoredFragment hdr      -- ^ Our chain
-                          -> AnchoredFragment hdr      --` ^ Candidate
+                          -> hdr      -- ^ Our chain
+                          -> hdr      --` ^ Candidate
                           -> Bool
-  preferCandidate _ ours cand =
-    AF.compareHeadBlockNo cand ours == GT
+  preferCandidate _ ours cand = blockNo cand > blockNo ours
 
   default compareCandidates :: HasHeader hdr
                             => NodeConfig p
-                            -> AnchoredFragment hdr -> AnchoredFragment hdr -> Ordering
-  compareCandidates _ = AF.compareHeadBlockNo
+                            -> hdr -> hdr -> Ordering
+  compareCandidates _ = compare `on` blockNo
 
 -- | Protocol security parameter
 --
