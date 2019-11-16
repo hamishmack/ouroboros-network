@@ -20,6 +20,7 @@ module Network.Mux.Types (
     , MuxTrace (..)
     , PerMuxSharedState (..)
     , RemoteClockModel (..)
+    , remoteClockPrecision
     , TranslocationServiceRequest (..)
     , Wanton (..)
     , WithMuxBearer (..)
@@ -43,8 +44,13 @@ import           Control.Monad.Class.MonadTime
 import           Network.TypedProtocol.Channel (Channel(Channel))
 import qualified Network.TypedProtocol.Channel as Channel
 
-newtype RemoteClockModel = RemoteClockModel { unRemoteClockModel :: Word32 } deriving Eq
+newtype RemoteClockModel
+  = RemoteClockModel { unRemoteClockModel :: Word32 }
+  deriving Eq
 
+-- | The `DiffTime` represented by a tick in the `RemoteClockModel`
+remoteClockPrecision :: DiffTime
+remoteClockPrecision = 1e-6
 
 --
 -- Mini-protocol numbers
