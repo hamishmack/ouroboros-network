@@ -155,7 +155,7 @@ newtype MiniProtocolDispatch ptcl m =
 data MiniProtocolMode = ModeInitiator | ModeResponder
   deriving (Eq, Ord, Ix, Enum, Bounded, Show)
 
-data MuxSDU ptcl = MuxSDU {
+data MuxSDU = MuxSDU {
       msTimestamp :: !RemoteClockModel
     , msCode      :: !MiniProtocolCode
     , msMode      :: !MiniProtocolMode
@@ -191,7 +191,7 @@ data PerMuxSharedState ptcl m = PerMuxSS {
     dispatchTable :: MiniProtocolDispatch ptcl m
   -- | Egress queue, shared by all miniprotocols
   , tsrQueue      :: TBQueue m (TranslocationServiceRequest ptcl m)
-  , bearer        :: MuxBearer ptcl m
+  , bearer        :: MuxBearer m
   }
 
 data MuxBearerState = Larval
@@ -216,11 +216,11 @@ data MuxBearerState = Larval
 -- * 'Network.Pipe.pipeAsMuxBearer'
 -- * @Test.Mux.queuesAsMuxBearer@
 --
-data MuxBearer ptcl m = MuxBearer {
+data MuxBearer m = MuxBearer {
     -- | Timestamp and send MuxSDU.
-      write   :: MuxSDU ptcl -> m Time
+      write   :: MuxSDU -> m Time
     -- | Read a MuxSDU
-    , read    :: m (MuxSDU ptcl, Time)
+    , read    :: m (MuxSDU, Time)
     -- | Return a suitable MuxSDU payload size.
     , sduSize :: m Word16
     , state   :: StrictTVar m MuxBearerState
@@ -231,9 +231,7 @@ data MuxBearer ptcl m = MuxBearer {
 -- 'Mx.Muxcontrol'.
 --
 muxBearerAsControlChannel
-  :: forall ptcl.
-     ProtocolEnum ptcl
-  => MuxBearer ptcl IO
+  :: MuxBearer IO
   -> MiniProtocolMode
   -> Channel IO BL.ByteString
 muxBearerAsControlChannel bearer mode = Channel {
@@ -245,7 +243,7 @@ muxBearerAsControlChannel bearer mode = Channel {
       recv = Just . msBlob . fst <$> read bearer
 
       -- wrap a 'ByteString' as 'MuxSDU'
-      wrap :: BL.ByteString -> MuxSDU ptcl
+      wrap :: BL.ByteString -> MuxSDU
       wrap blob = MuxSDU {
             -- it will be filled when the 'MuxSDU' is send by the 'bearer'
             msTimestamp = RemoteClockModel 0,
@@ -306,12 +304,12 @@ instance (Show a, Show peerid) => Show (WithMuxBearer peerid a) where
 --
 data MuxTrace ptcl =
       MuxTraceRecvHeaderStart
-    | MuxTraceRecvHeaderEnd (MuxSDU ptcl)
+    | MuxTraceRecvHeaderEnd MuxSDU
     | MuxTraceRecvPayloadStart Int
     | MuxTraceRecvPayloadEnd BL.ByteString
     | MuxTraceRecvStart Int
     | MuxTraceRecvEnd BL.ByteString
-    | MuxTraceSendStart (MuxSDU ptcl)
+    | MuxTraceSendStart MuxSDU
     | MuxTraceSendEnd
     | MuxTraceStateChange MuxBearerState MuxBearerState
     | MuxTraceCleanExit String
