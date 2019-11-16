@@ -6,6 +6,9 @@
 
 module Network.Mux.Types (
       MiniProtocolDispatch (..)
+    , MiniProtocolCodes (..)
+    , toMiniProtocolCode
+    , fromMiniProtocolCode
     , MiniProtocolLimits (..)
     , ProtocolEnum (..)
     , MiniProtocolId (..)
@@ -155,6 +158,23 @@ newtype MiniProtocolDispatch ptcl m =
 data MiniProtocolMode = ModeInitiator | ModeResponder
   deriving (Eq, Ord, Ix, Enum, Bounded, Show)
 
+data MiniProtocolCodes ptcl =
+     MiniProtocolCodes !(Array (MiniProtocolId ptcl) MiniProtocolCode)
+                       !(Array MiniProtocolCode (Maybe (MiniProtocolId ptcl)))
+
+toMiniProtocolCode :: (Ord ptcl, Enum ptcl)
+                   => MiniProtocolCodes ptcl
+                   -> MiniProtocolId ptcl
+                   -> MiniProtocolCode
+toMiniProtocolCode (MiniProtocolCodes tbl _) ptcl = tbl ! ptcl
+
+fromMiniProtocolCode :: MiniProtocolCodes ptcl
+                     -> MiniProtocolCode
+                     -> Maybe (MiniProtocolId ptcl)
+fromMiniProtocolCode (MiniProtocolCodes _ tbl) code
+  | inRange (bounds tbl) code = tbl ! code
+  | otherwise                 = Nothing
+
 data MuxSDU = MuxSDU {
       msTimestamp :: !RemoteClockModel
     , msCode      :: !MiniProtocolCode
@@ -191,6 +211,7 @@ data PerMuxSharedState ptcl m = PerMuxSS {
     dispatchTable :: MiniProtocolDispatch ptcl m
   -- | Egress queue, shared by all miniprotocols
   , tsrQueue      :: TBQueue m (TranslocationServiceRequest ptcl m)
+  , protocolCodes :: MiniProtocolCodes ptcl
   , bearer        :: MuxBearer m
   }
 
