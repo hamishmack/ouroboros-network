@@ -95,7 +95,6 @@ runMuxWithQueues
      , Enum ptcl
      , Bounded ptcl
      , Show ptcl
-     , Mx.MiniProtocolLimits ptcl
      , Eq  (Async m ())
      )
   => Tracer m (Mx.WithMuxBearer String Mx.MuxTrace)
