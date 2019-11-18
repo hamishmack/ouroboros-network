@@ -4,15 +4,10 @@
 -- package from cardano-ledger-specs.
 module Ouroboros.Consensus.Protocol.TPraos.Util where
 
-import Ouroboros.Consensus.Protocol.TPraos.Crypto
 import Ouroboros.Network.Block (SlotNo (..))
 import Ouroboros.Network.Point (WithOrigin(..))
 
 import Slot (Slot(..))
-import qualified STS.Prtcl as STS
-
--- Useful type alias
-type PRTCL c = STS.PRTCL (TPraosHash c) (TPraosDSIGN c) (TPraosKES c) (TPraosVRF c)
 
 -- | Convert a ouroboros-consensus `SlotNo` to a cardano-ledger-specs `Slot`.
 convertSlot :: SlotNo -> Slot

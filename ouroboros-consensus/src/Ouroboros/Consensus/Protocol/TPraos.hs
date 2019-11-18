@@ -30,7 +30,7 @@ module Ouroboros.Consensus.Protocol.TPraos (
   , TPraosIsCoreNode(..)
   , forgeTPraosFields
     -- * Tags
-  , TPraosCrypto(..)
+  , TPraosCrypto
   , TPraosStandardCrypto
   , TPraosMockCrypto
   , HeaderSupportsTPraos(..)
@@ -46,7 +46,8 @@ import           Data.Proxy (Proxy (..))
 import           Data.Word (Word64)
 import           GHC.Generics (Generic)
 import           Control.State.Transition (TRC(..), applySTS)
-import           Cardano.Crypto.DSIGN.Class (DSIGNAlgorithm, VerKeyDSIGN)
+import           Cardano.Ledger.Shelley.Crypto
+import           Cardano.Crypto.DSIGN.Class (VerKeyDSIGN)
 import           Cardano.Crypto.Hash.Class (HashAlgorithm (..))
 import           Cardano.Crypto.KES.Class
 import           Cardano.Crypto.VRF.Class
@@ -67,6 +68,7 @@ import Keys (DiscVKey(..), GenDelegs(..), GenKeyHash, KeyHash, hashKey)
 import OCert (OCert(..))
 import PParams (PParams)
 import Slot (Slot(..))
+import STS.Prtcl (PRTCL)
 import qualified STS.Prtcl as STS
 
 {-------------------------------------------------------------------------------
@@ -89,20 +91,20 @@ data TPraosToSign c = TPraosToSign
     --   where we have a key for the genesis delegate on whose behalf we are
     --   issuing this block, this key corresponds to the stake pool/core node
     --   actually forging the block.
-    tptsIssuerVK :: VerKeyDSIGN (TPraosDSIGN c)
-  , tptsVrfVk :: VerKeyVRF (TPraosVRF c)
+    tptsIssuerVK :: VerKeyDSIGN (DSIGN c)
+  , tptsVrfVk :: VerKeyVRF (VRF c)
     -- | Verifiable result containing the updated nonce value.
-  , tptsEta :: CertifiedVRF (TPraosVRF c) Nonce
+  , tptsEta :: CertifiedVRF (VRF c) Nonce
     -- | Verifiable proof of the leader value, used to determine whether the
     -- node has the right to issue a block in this slot.
     --
     -- We include a value here even for blocks forged under the BFT schedule. It
     -- is not required that such a value be verifiable (though by default it
     -- will be verifiably correct, but unused.)
-  , tptsLeader :: CertifiedVRF (TPraosVRF c) UnitInterval
+  , tptsLeader :: CertifiedVRF (VRF c) UnitInterval
     -- Lightweight delegation certificate mapping the cold (DSIGN) key to the
     -- online KES key.
-  , tptsOCert :: OCert (TPraosDSIGN c) (TPraosKES c)
+  , tptsOCert :: OCert c
   }
   deriving Generic
 
@@ -111,6 +113,7 @@ deriving instance TPraosCrypto c => Show (TPraosToSign c)
 
 class ( HasHeader hdr
       , SignedHeader hdr
+      , TPraosCrypto c
       , Cardano.Crypto.KES.Class.Signable (TPraosKES c) (Signed hdr)
       ) => HeaderSupportsTPraos c hdr where
 
@@ -120,7 +123,7 @@ class ( HasHeader hdr
   headerToBHeader
     :: proxy (TPraos c)
     -> hdr
-    -> BHeader (TPraosHash c) (TPraosDSIGN c) (TPraosKES c) (TPraosVRF c)
+    -> BHeader c
 
 forgeTPraosFields :: ( HasNodeState (TPraos c) m
                     , MonadRandom m
@@ -163,8 +166,8 @@ forgeTPraosFields TPraosNodeConfig{..}  TPraosProof{..} mkToSign = do
 -- selected slot.
 data TPraosProof c
   = TPraosProof
-    { tpraosEta       :: CertifiedVRF (TPraosVRF c) Nonce
-    , tpraosLeader    :: CertifiedVRF (TPraosVRF c) UnitInterval
+    { tpraosEta       :: CertifiedVRF (VRF c) Nonce
+    , tpraosLeader    :: CertifiedVRF (VRF c) UnitInterval
     , tpraosProofSlot :: SlotNo
     , tpraosIsCoreNode :: TPraosIsCoreNode c
     } deriving Generic
@@ -173,9 +176,9 @@ instance TPraosCrypto c => NoUnexpectedThunks (TPraosProof c)
 
 data TPraosLedgerView c = TPraosLedgerView {
     -- | Stake distribution
-    tpraosLedgerViewPoolDistr :: PoolDistr (TPraosHash c) (TPraosDSIGN c) (TPraosVRF c)
+    tpraosLedgerViewPoolDistr :: PoolDistr c
   , tpraosLedgerViewProtParams :: PParams
-  , tpraosLedgerViewDelegationMap :: GenDelegs (TPraosHash c) (TPraosDSIGN c)
+  , tpraosLedgerViewDelegationMap :: GenDelegs c
   , tpraosLedgerViewEpochNonce :: Nonce
   , tpraosLedgerViewLeaderVal :: UnitInterval
     -- | Determines which slots are considered to be part of the overlay
@@ -194,7 +197,7 @@ data TPraosLedgerView c = TPraosLedgerView {
     -- issues blocks in every slot) in the overlay schedule with the shorter
     -- slot lengths to be used under Praos, which issues blocks only in some
     -- proportion (the 'active slot coefficient') of slots.
-  , tpraosLedgerViewOverlaySchedule :: Map.Map Slot (Maybe (GenKeyHash (TPraosHash c) (TPraosDSIGN c)))
+  , tpraosLedgerViewOverlaySchedule :: Map.Map Slot (Maybe (GenKeyHash c))
   } deriving Generic
 
 instance NoUnexpectedThunks (TPraosLedgerView c)
@@ -219,16 +222,13 @@ instance NoUnexpectedThunks TPraosParams
 
 data TPraosIsCoreNode c = TPraosIsCoreNode
   { -- | Online KES key used to sign blocks.GHC.Generics
-    tpraosIsCoreNodeSKSHot :: SignKeyKES (TPraosKES c)
+    tpraosIsCoreNodeSKSHot :: SignKeyKES (KES c)
     -- | Certificate delegating rights from the stake pool cold key (or genesis
     -- stakeholder delegate cold key) to the online KES key.
-  , tpraosIsCoreNodeOpCert :: OCert (TPraosDSIGN c) (TPraosKES c)
+  , tpraosIsCoreNodeOpCert :: OCert c
   } deriving Generic
 
-instance
-  ( DSIGNAlgorithm (TPraosDSIGN c)
-  , KESAlgorithm (TPraosKES c)
-  ) => NoUnexpectedThunks (TPraosIsCoreNode c)
+instance TPraosCrypto c => NoUnexpectedThunks (TPraosIsCoreNode c)
 
 instance TPraosCrypto c => OuroborosTag (TPraos c) where
 
@@ -238,14 +238,15 @@ instance TPraosCrypto c => OuroborosTag (TPraos c) where
   type LedgerView      (TPraos c) = TPraosLedgerView c
   type IsLeader        (TPraos c) = TPraosProof c
   type ValidationErr   (TPraos c) = [[STS.PredicateFailure (PRTCL c)]]
-  type SupportedHeader (TPraos c) = HeaderSupportsTPraos c
+  type CanValidate     (TPraos c) = HeaderSupportsTPraos c
+  type CanSelect       (TPraos c) = HasHeader
   type ChainState      (TPraos c) = ChainState.TPraosChainState c
 
   checkIsLeader cfg@TPraosNodeConfig{..} slot lv cs =
     getNodeState >>= \case
         Nothing -> return Nothing
         Just icn@TPraosIsCoreNode{ tpraosIsCoreNodeOpCert} -> do
-          let mkSeed' = mkSeed @(TPraosHash c) @(TPraosDSIGN c) @(TPraosKES c) @(TPraosVRF c)
+          let mkSeed' = mkSeed @c
               vkhCold = hashKey $ ocertVkCold tpraosIsCoreNodeOpCert
               t = leaderThreshold cfg lv vkhCold
               eta0 = tpraosLedgerViewEpochNonce lv
@@ -341,7 +342,7 @@ phi TPraosNodeConfig{..} r = 1 - (1 - tpraosLeaderF) ** fromRational r
 leaderThreshold :: forall c. TPraosCrypto c
                 => NodeConfig (TPraos c)
                 -> LedgerView (TPraos c)
-                -> KeyHash (TPraosHash c) (TPraosDSIGN c) -- ^ Key hash of the pool
+                -> KeyHash c -- ^ Key hash of the pool
                 -> Double
 leaderThreshold nc lv kh =
     let PoolDistr pd = tpraosLedgerViewPoolDistr lv
@@ -350,7 +351,7 @@ leaderThreshold nc lv kh =
 
 prtclStateHash
   :: STS.State (PRTCL c)
-  -> BlockChain.HashHeader (TPraosHash c) (TPraosDSIGN c) (TPraosKES c) (TPraosVRF c)
+  -> BlockChain.HashHeader c
 prtclStateHash (STS.PrtclState _ h _ _ _ _) = h
 
 {-------------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import Ouroboros.Network.Block (SlotNo (..))
 import Ouroboros.Network.Point (WithOrigin (..))
 import Ouroboros.Consensus.Protocol.TPraos.Util
 
+import STS.Prtcl (PRTCL)
 import qualified STS.Prtcl as STS
 
 -- | Praos chain state.
