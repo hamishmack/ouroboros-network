@@ -323,7 +323,7 @@ instance (Show a, Show peerid) => Show (WithMuxBearer peerid a) where
 
 -- | Enumeration of Mux events that can be traced.
 --
-data MuxTrace ptcl =
+data MuxTrace =
       MuxTraceRecvHeaderStart
     | MuxTraceRecvHeaderEnd MuxSDU
     | MuxTraceRecvPayloadStart Int
@@ -344,7 +344,7 @@ data MuxTrace ptcl =
     | forall e. Exception e => MuxTraceHandshakeClientError e
     | forall e. Exception e => MuxTraceHandshakeServerError e
 
-instance Show ptcl => Show (MuxTrace ptcl) where
+instance Show MuxTrace where
     show MuxTraceRecvHeaderStart = printf "Bearer Receive Header Start"
     show (MuxTraceRecvHeaderEnd sdu) = printf "Bearer Receive Header End: ts: 0x%08x %s %s len %d"
         (unRemoteClockModel $ msTimestamp sdu)

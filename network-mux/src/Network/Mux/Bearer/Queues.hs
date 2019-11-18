@@ -32,7 +32,7 @@ queuesAsMuxBearer
      , MonadThrow m
      , Eq  (Async m ())
      )
-  => Tracer m (Mx.MuxTrace ptcl)
+  => Tracer m Mx.MuxTrace
   -> TBQueue m BL.ByteString
   -> TBQueue m BL.ByteString
   -> Word16
@@ -99,7 +99,7 @@ runMuxWithQueues
      , Mx.MiniProtocolLimits ptcl
      , Eq  (Async m ())
      )
-  => Tracer m (Mx.WithMuxBearer String (Mx.MuxTrace ptcl))
+  => Tracer m (Mx.WithMuxBearer String Mx.MuxTrace)
   -> peerid
   -> Mx.MuxApplication appType peerid ptcl m a b
   -> TBQueue m BL.ByteString
