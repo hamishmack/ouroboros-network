@@ -9,7 +9,6 @@ module Network.Mux.Types (
     , MiniProtocolDispatchInfo (..)
     , lookupMiniProtocol
     , MiniProtocolLimits (..)
-    , ProtocolEnum (..)
     , MiniProtocolId (..)
     , MiniProtocolCode
     , MiniProtocolMode (..)
@@ -62,11 +61,6 @@ newtype RemoteClockModel = RemoteClockModel { unRemoteClockModel :: Word32 } der
 -- Note: the values @0@ and @1@ are reserved for 'Muxcontrol' and 'DeltaQ'
 -- messages.
 --
-class ProtocolEnum ptcl where
-
-    fromProtocolEnum :: ptcl -> MiniProtocolCode
-    toProtocolEnum   :: MiniProtocolCode -> Maybe ptcl
-
 type MiniProtocolCode = Word16
 
 -- | The Ids of mini-protocols that the mux manages. This is expected to be
@@ -85,19 +79,6 @@ data MiniProtocolId ptcl = Muxcontrol
                          | DeltaQ
                          | AppProtocolId ptcl
                     deriving (Eq, Ord, Show)
-
--- | Shift the inner enumeration up by two, to account for the two mux built-in
--- mini-protocols. This determines the final wire format for the protocol
--- numbers.
---
-instance ProtocolEnum ptcl => ProtocolEnum (MiniProtocolId ptcl) where
-  fromProtocolEnum Muxcontrol           = 0
-  fromProtocolEnum DeltaQ               = 1
-  fromProtocolEnum (AppProtocolId ptcl) = fromProtocolEnum ptcl
-
-  toProtocolEnum 0 = Just Muxcontrol
-  toProtocolEnum 1 = Just DeltaQ
-  toProtocolEnum n = AppProtocolId <$> toProtocolEnum n
 
 -- | Shift the inner enumeration up by two, to account for the two mux built-in
 -- mini-protocols. This instance is never used for the wire format, just for

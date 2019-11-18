@@ -26,7 +26,7 @@ import           Network.Mux.Time as Mx
 
 
 queuesAsMuxBearer
-  :: forall ptcl m.
+  :: forall m.
      ( MonadSTM   m
      , MonadTime  m
      , MonadThrow m
@@ -94,7 +94,6 @@ runMuxWithQueues
      , Ord ptcl
      , Enum ptcl
      , Bounded ptcl
-     , Mx.ProtocolEnum ptcl
      , Show ptcl
      , Mx.MiniProtocolLimits ptcl
      , Eq  (Async m ())
