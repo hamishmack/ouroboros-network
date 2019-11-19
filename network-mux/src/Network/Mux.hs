@@ -33,7 +33,6 @@ import           GHC.Stack
 import           Text.Printf
 
 import           Network.Mux.Channel
-import           Network.Mux.Interface
 import           Network.Mux.Egress  as Egress
 import           Network.Mux.Ingress as Ingress
 import           Network.Mux.Types
