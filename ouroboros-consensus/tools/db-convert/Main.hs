@@ -149,11 +149,9 @@ convertEpochFile es inFile outDir =
       encode = CB.serializeEncoding' . Byron.encodeByronBlock . Byron.mkByronBlock es
    in do
         createDirIfMissing True dbDir
-        -- Old filename format is XXXXX.dat, new is epoch-XXX.dat
-        outFileName <-
-          parseRelFile $ "epoch-" <>
-            drop 2 (toFilePath (filename inFile))
-        outFile <- (dbDir </> outFileName) -<.> "dat"
+        -- Old filename format is XXXXX.dat, new is XXXXX.epoch
+        outFileName <- parseRelFile (toFilePath (filename inFile))
+        outFile <- (dbDir </> outFileName) -<.> "epoch"
         IO.withFile (toFilePath outFile) IO.WriteMode $ \h ->
           runResourceT $ runExceptT $ S.mapM_ (liftIO . BS.hPut h) . S.map encode $ inStream
 
