@@ -14,9 +14,6 @@ import           Test.Tasty (TestTree, testGroup)
 import           Test.Tasty.HUnit
 import           Test.Tasty.QuickCheck (testProperty)
 
-import           Ouroboros.Network.Block (blockSlot)
-
-import           Ouroboros.Consensus.Block (IsEBB (..))
 import           Ouroboros.Consensus.Util.IOLike
 
 import           Ouroboros.Storage.Common
@@ -74,10 +71,7 @@ openTestDB hasFS err = openDB
     nullTracer
   where
     parser = epochFileParser hasFS (const <$> S.decode) isEBB getBinaryInfo
-    isEBB b  = case testBlockIsEBB b of
-      IsNotEBB -> Nothing
-      IsEBB    -> Just $
-        EpochNo (unSlotNo (blockSlot b) `div` unEpochSize fixedEpochSize)
+    isEBB  = testBlockEpochNoIfEBB fixedEpochSize
     getBinaryInfo = void . testBlockToBinaryInfo
 
 -- Shorthand

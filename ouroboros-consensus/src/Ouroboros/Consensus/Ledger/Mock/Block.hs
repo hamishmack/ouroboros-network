@@ -42,12 +42,14 @@ module Ouroboros.Consensus.Ledger.Mock.Block (
     -- * Serialisation
   , encodeSimpleHeader
   , decodeSimpleHeader
+  , simpleBlockBinaryInfo
   ) where
 
 import qualified Codec.CBOR.Decoding as CBOR
 import qualified Codec.CBOR.Encoding as CBOR
-import           Codec.Serialise (Serialise (..))
+import           Codec.Serialise (Serialise (..), serialise)
 import           Control.Monad.Except
+import qualified Data.ByteString.Lazy as Lazy
 import           Data.FingerTree.Strict (Measured (..))
 import           Data.Proxy
 import           Data.Typeable
@@ -69,6 +71,8 @@ import           Ouroboros.Consensus.Mempool.API
 import           Ouroboros.Consensus.Util ((.:))
 import           Ouroboros.Consensus.Util.Condense
 import           Ouroboros.Consensus.Util.Orphans ()
+
+import           Ouroboros.Storage.ImmutableDB (BinaryInfo (..))
 
 {-------------------------------------------------------------------------------
   Definition of a block
@@ -392,3 +396,11 @@ instance (SimpleCrypto c, Serialise ext')
       => Serialise (Header (SimpleBlock' c ext ext')) where
   encode = encodeSimpleHeader encode
   decode = decodeSimpleHeader encode decode
+
+simpleBlockBinaryInfo :: (SimpleCrypto c, Serialise ext')
+                      => SimpleBlock' c ext ext' -> BinaryInfo CBOR.Encoding
+simpleBlockBinaryInfo b = BinaryInfo
+    { binaryBlob   = encode b
+    , headerOffset = 2 -- For the 'encodeListLen'
+    , headerSize   = fromIntegral $ Lazy.length $ serialise (getHeader b)
+    }

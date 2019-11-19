@@ -288,10 +288,16 @@ initIteratorEnv TestSetup { immutable, volatile } tracer = do
     -- | Open a mock ImmutableDB and add the given chain of blocks
     openImmDB :: Chain TestBlock -> m (ImmDB m TestBlock)
     openImmDB chain = do
-      (_immDBModel, immDB) <- ImmDB.openDBMock EH.monadCatch (const epochSize)
-      forM_ (Chain.toOldestFirst chain) $ \block ->
-        ImmDB.appendBinaryBlob immDB (blockSlot block)
-                               (serialiseIncremental block)
-      let epochInfo = fixedSizeEpochInfo epochSize
-          isEBB     = const Nothing
-      return $ mkImmDB immDB (const <$> decode) encode epochInfo isEBB EH.monadCatch
+        (_immDBModel, immDB) <- ImmDB.openDBMock EH.monadCatch (const epochSize)
+        forM_ (Chain.toOldestFirst chain) $ \block ->
+          ImmDB.appendBlock immDB (blockSlot block) (serialiseIncremental block)
+        return $ mkImmDB immDB (const <$> decode) (addDummyBinaryInfo . encode)
+          epochInfo isEBB EH.monadCatch
+      where
+        epochInfo = fixedSizeEpochInfo epochSize
+        isEBB     = const Nothing
+        addDummyBinaryInfo blob = ImmDB.BinaryInfo
+          { ImmDB.binaryBlob   = blob
+          , ImmDB.headerOffset = 0
+          , ImmDB.headerSize   = 0
+          }

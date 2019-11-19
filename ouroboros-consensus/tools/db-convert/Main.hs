@@ -52,7 +52,7 @@ import           Ouroboros.Consensus.Util.ResourceRegistry
 import qualified Ouroboros.Storage.ChainDB as ChainDB
 import qualified Ouroboros.Storage.ChainDB.Impl.Args as Args
 import qualified Ouroboros.Storage.ChainDB.Impl.ImmDB as ImmDB
-import           Ouroboros.Storage.Common (EpochSize (..))
+import           Ouroboros.Storage.Common (EpochNo (..), EpochSize (..))
 import           Ouroboros.Storage.EpochInfo (fixedSizeEpochInfo)
 import qualified Ouroboros.Storage.LedgerDB.DiskPolicy as LgrDB
 import qualified Ouroboros.Storage.LedgerDB.InMemory as LgrDB
@@ -203,7 +203,7 @@ validateChainDb dbDir cfg onlyImmDB verbose =
         , ChainDB.cdbDecodeChainState = Byron.decodeByronChainState
         , ChainDB.cdbDecodeHash = Byron.decodeByronHeaderHash
         , ChainDB.cdbDecodeLedger = Byron.decodeByronLedgerState
-        , ChainDB.cdbEncodeBlock = Byron.encodeByronBlock
+        , ChainDB.cdbEncodeBlock = Byron.encodeByronBlockWithInfo
         , ChainDB.cdbEncodeChainState = Byron.encodeByronChainState
         , ChainDB.cdbEncodeHash = Byron.encodeByronHeaderHash
         , ChainDB.cdbEncodeLedger = Byron.encodeByronLedgerState
@@ -216,8 +216,13 @@ validateChainDb dbDir cfg onlyImmDB verbose =
         , ChainDB.cdbNodeConfig = pInfoConfig byronProtocolInfo
         , ChainDB.cdbEpochInfo = fixedSizeEpochInfo . EpochSize . unEpochSlots $ epochSlots
         , ChainDB.cdbIsEBB = \blk -> case Byron.byronBlockRaw blk of
-          CC.ABOBBlock _      -> Nothing
-          CC.ABOBBoundary ebb -> Just (Byron.ByronHash (CC.boundaryHashAnnotated ebb))
+            CC.ABOBBlock _      -> Nothing
+            CC.ABOBBoundary ebb -> Just
+                                 . EpochNo
+                                 . CC.boundaryEpoch
+                                 . CC.boundaryHeader
+                                 $ ebb
+
           -- Misc
         , ChainDB.cdbTracer = if verbose
             then contramap show debugTracer

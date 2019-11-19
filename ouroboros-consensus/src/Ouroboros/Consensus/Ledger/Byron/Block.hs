@@ -3,7 +3,6 @@
 {-# LANGUAGE DerivingStrategies         #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE RecordWildCards            #-}
 {-# LANGUAGE TypeApplications           #-}
@@ -22,6 +21,7 @@ module Ouroboros.Consensus.Ledger.Byron.Block (
   , mkByronHeader
   , byronBlockMatchesHeader
     -- * Serialisation
+  , encodeByronBlockWithInfo
   , encodeByronBlock
   , decodeByronBlock
   , encodeByronHeader
@@ -31,6 +31,7 @@ module Ouroboros.Consensus.Ledger.Byron.Block (
   ) where
 
 import           Data.ByteString (ByteString)
+import qualified Data.ByteString as Strict
 import qualified Data.ByteString.Lazy as Lazy
 import           Data.FingerTree.Strict (Measured (..))
 import           Data.Proxy
@@ -54,6 +55,8 @@ import           Ouroboros.Consensus.Ledger.Byron.Aux
 import           Ouroboros.Consensus.Ledger.Byron.Conversions
 import           Ouroboros.Consensus.Ledger.Byron.Orphans ()
 import           Ouroboros.Consensus.Util.Condense
+
+import           Ouroboros.Storage.ImmutableDB (BinaryInfo (..))
 
 {-------------------------------------------------------------------------------
   Header hash
@@ -183,6 +186,27 @@ encodeByronHeaderHash = toCBOR
 
 decodeByronHeaderHash :: Decoder s (HeaderHash ByronBlock)
 decodeByronHeaderHash = fromCBOR
+
+-- | 'encodeByronBlock' including the offset and size of the header within the
+-- resulting bytestring.
+--
+-- NOTE: the bytestring obtained by slicing the serialised block using the
+-- header offset and size will correspond to the /header annotation/, but not
+-- to the serialised header, as we add an envelope ('encodeListLen' + tag)
+-- around a header in 'encodeByronHeader'. This envelope must thus still be
+-- added to the sliced bytestring before it can be deserialised using
+-- 'decodeByronHeader'.
+encodeByronBlockWithInfo :: ByronBlock -> BinaryInfo Encoding
+encodeByronBlockWithInfo blk = BinaryInfo
+    { binaryBlob   = encodeByronBlock blk
+    , headerOffset = 1 {- 'encodeListLen' of the outer 'Either' envelope -}
+                   + 1 {- the tag -}
+                   + 1 {- 'encodeListLen' of the block: header + body + ...  -}
+      -- Compute the length of the annotated header
+    , headerSize   = fromIntegral $ Strict.length $ case byronBlockRaw blk of
+        CC.ABOBBoundary b -> CC.boundaryHeaderAnnotation $ CC.boundaryHeader b
+        CC.ABOBBlock    b -> CC.headerAnnotation         $ CC.blockHeader    b
+    }
 
 -- | Encode a block
 --

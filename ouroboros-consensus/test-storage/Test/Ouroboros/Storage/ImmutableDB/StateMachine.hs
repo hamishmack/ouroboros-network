@@ -19,6 +19,7 @@ module Test.Ouroboros.Storage.ImmutableDB.StateMachine
 
 import           Prelude hiding (elem, notElem)
 
+import           Codec.CBOR.Write (toBuilder)
 import           Codec.Serialise (decode)
 import           Control.Monad (forM_, void, when)
 import           Control.Monad.Except (ExceptT (..), runExceptT)
@@ -56,8 +57,6 @@ import qualified Test.QuickCheck.Monadic as QC
 import           Test.QuickCheck.Random (mkQCGen)
 import           Test.StateMachine
 import qualified Test.StateMachine.Sequential as QSM
-import           Test.StateMachine.Types (Command (..), Commands (..),
-                     Reference (..), Symbolic (..), Var (..))
 import qualified Test.StateMachine.Types as QSM
 import qualified Test.StateMachine.Types.Rank2 as Rank2
 import           Test.Tasty (TestTree, testGroup)
@@ -197,8 +196,8 @@ run runCorruption its db internal cmd = case cmd of
   GetEBBHeader      e   -> EBBHeader   <$> getEBBHeader   db e
   GetBlockHash      s   -> BlockHash   <$> getBlockHash   db s
   GetEBBHash        e   -> EBBHash     <$> getEBBHash     db e
-  AppendBlock     s h b -> Unit        <$> appendBlock    db s h (testBlockToBinaryInfo b)
-  AppendEBB       e h b -> Unit        <$> appendEBB      db e h (testBlockToBinaryInfo b)
+  AppendBlock     s h b -> Unit        <$> appendBlock    db s h (toBuilder <$> testBlockToBinaryInfo b)
+  AppendEBB       e h b -> Unit        <$> appendEBB      db e h (toBuilder <$> testBlockToBinaryInfo b)
   StreamBlocks    s e   -> Iter        <$> streamBlocks   db s e
   StreamHeaders   s e   -> Iter        <$> streamHeaders  db s e
   IteratorNext    it    -> IterResult  <$> iteratorNext    it
@@ -1277,10 +1276,7 @@ prop_sequential = forAllCommands smUnused Nothing $ \cmds -> QC.monadicIO $ do
     (dbm, mdb, minternal) = mkDBModel
     smUnused = sm (error "errorsVar unused") hasFsUnused dbUnused
       internalUnused dbm mdb minternal
-    isEBB b  = case testBlockIsEBB b of
-      IsNotEBB -> Nothing
-      IsEBB    -> Just $
-        C.EpochNo (unSlotNo (blockSlot b) `div` unEpochSize fixedEpochSize)
+    isEBB = testBlockEpochNoIfEBB fixedEpochSize
     getBinaryInfo = void . testBlockToBinaryInfo
 
 tests :: TestTree

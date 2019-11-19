@@ -14,6 +14,7 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 module Test.Ouroboros.Storage.TestBlock where
 
+import qualified Codec.CBOR.Encoding as CBOR
 import qualified Codec.CBOR.Read as CBOR
 import qualified Codec.CBOR.Write as CBOR
 import           Codec.Serialise (Serialise (decode, encode), serialise)
@@ -54,6 +55,7 @@ import           Ouroboros.Consensus.Util.Condense
 import           Ouroboros.Consensus.Util.Orphans ()
 import qualified Ouroboros.Consensus.Util.SlotBounded as SB
 
+import           Ouroboros.Storage.Common (EpochNo (..), EpochSize (..))
 import           Ouroboros.Storage.FS.API (HasFS (..), withFile)
 import           Ouroboros.Storage.FS.API.Types
 import           Ouroboros.Storage.ImmutableDB.Types (BinaryInfo (..),
@@ -168,12 +170,19 @@ testHashInfo = HashInfo
 testBlockIsEBB :: TestBlock -> IsEBB
 testBlockIsEBB = thIsEBB . testHeader
 
+-- | Only works correctly if the epoch size is fixed
+testBlockEpochNoIfEBB :: EpochSize -> TestBlock -> Maybe EpochNo
+testBlockEpochNoIfEBB fixedEpochSize b = case testBlockIsEBB b of
+    IsNotEBB -> Nothing
+    IsEBB    -> Just $
+      EpochNo (unSlotNo (blockSlot b) `div` unEpochSize fixedEpochSize)
+
 testBlockToBuilder :: TestBlock -> Builder
 testBlockToBuilder = CBOR.toBuilder . encode
 
-testBlockToBinaryInfo :: TestBlock -> BinaryInfo Builder
+testBlockToBinaryInfo :: TestBlock -> BinaryInfo CBOR.Encoding
 testBlockToBinaryInfo tb = BinaryInfo
-    { binaryBlob   = testBlockToBuilder tb
+    { binaryBlob   = encode tb
     , headerOffset = 2 -- For the 'encodeListLen'
     , headerSize   = fromIntegral $ Lazy.length $ serialise $ testHeader tb
     }

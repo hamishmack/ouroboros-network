@@ -36,8 +36,8 @@ import           Ouroboros.Storage.ChainDB (ChainDbArgs (..),
 import qualified Ouroboros.Storage.ChainDB as ChainDB
 import           Ouroboros.Storage.Common (EpochSize (..))
 import           Ouroboros.Storage.EpochInfo (fixedSizeEpochInfo)
-import           Ouroboros.Storage.ImmutableDB
-                     (ValidationPolicy (ValidateAllEpochs))
+import           Ouroboros.Storage.ImmutableDB (BinaryInfo (..),
+                     ValidationPolicy (ValidateAllEpochs))
 import           Ouroboros.Storage.LedgerDB.DiskPolicy (defaultDiskPolicy)
 import           Ouroboros.Storage.LedgerDB.InMemory (ledgerDbDefaultParams)
 import qualified Ouroboros.Storage.Util.ErrorHandling as EH
@@ -234,7 +234,7 @@ mkArgs cfg initLedger tracer registry
     , cdbDecodeChainState = decode
 
       -- Encoders
-    , cdbEncodeBlock      = encode
+    , cdbEncodeBlock      = addDummyBinaryInfo . encode
     , cdbEncodeHash       = encode
     , cdbEncodeLedger     = encode
     , cdbEncodeChainState = encode
@@ -267,3 +267,9 @@ mkArgs cfg initLedger tracer registry
     , cdbRegistry         = registry
     , cdbGcDelay          = 0
     }
+  where
+    addDummyBinaryInfo blob = BinaryInfo
+      { binaryBlob   = blob
+      , headerOffset = 0
+      , headerSize   = 0
+      }

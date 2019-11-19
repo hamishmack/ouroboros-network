@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleInstances   #-}
+{-# LANGUAGE NamedFieldPuns      #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
@@ -28,6 +29,8 @@ import           Ouroboros.Consensus.Protocol.Abstract (ChainState)
 import           Ouroboros.Consensus.Protocol.PBFT
 import           Ouroboros.Consensus.Protocol.PBFT.ChainState
 
+import           Ouroboros.Storage.ImmutableDB (BinaryInfo (..))
+
 import           Test.QuickCheck
 import           Test.QuickCheck.Hedgehog (hedgehog)
 import           Test.Tasty
@@ -56,6 +59,8 @@ tests = testGroup "Byron"
       , testProperty "roundtrip ApplyTxErr"  prop_roundtrip_ApplyTxErr
       ]
       -- TODO LedgerState
+
+  , testProperty "BinaryInfo sanity check"   prop_encodeByronBlockWithInfo
   ]
 
 {-------------------------------------------------------------------------------
@@ -123,6 +128,28 @@ prop_roundtrip_GenTxId =
 prop_roundtrip_ApplyTxErr :: ApplyTxErr ByronBlock -> Property
 prop_roundtrip_ApplyTxErr =
     roundtrip encodeByronApplyTxError decodeByronApplyTxError
+
+{-------------------------------------------------------------------------------
+  BinaryInfo
+-------------------------------------------------------------------------------}
+
+prop_encodeByronBlockWithInfo :: ByronBlock -> Property
+prop_encodeByronBlockWithInfo blk =
+    headerAnnotation === extractedHeader
+  where
+    BinaryInfo { binaryBlob, headerOffset, headerSize } =
+      encodeByronBlockWithInfo blk
+
+    extractedHeader :: Lazy.ByteString
+    extractedHeader =
+        Lazy.take (fromIntegral headerSize)   $
+        Lazy.drop (fromIntegral headerOffset) $
+        toLazyByteString binaryBlob
+
+    headerAnnotation :: Lazy.ByteString
+    headerAnnotation = Lazy.fromStrict $ case byronBlockRaw blk of
+      ABOBBoundary b -> CC.Block.boundaryHeaderAnnotation $ CC.Block.boundaryHeader b
+      ABOBBlock    b -> CC.Block.headerAnnotation         $ CC.Block.blockHeader    b
 
 {-------------------------------------------------------------------------------
   Generators

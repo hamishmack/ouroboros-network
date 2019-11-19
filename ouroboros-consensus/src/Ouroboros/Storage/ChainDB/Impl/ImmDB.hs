@@ -4,7 +4,6 @@
 {-# LANGUAGE RankNTypes                #-}
 {-# LANGUAGE RecordWildCards           #-}
 {-# LANGUAGE ScopedTypeVariables       #-}
-{-# LANGUAGE TypeApplications          #-}
 
 {-# OPTIONS_GHC -Wredundant-constraints #-}
 -- | Thin wrapper around the ImmutableDB
@@ -53,6 +52,7 @@ import           Codec.CBOR.Decoding (Decoder)
 import           Codec.CBOR.Encoding (Encoding)
 import qualified Codec.CBOR.Read as CBOR
 import qualified Codec.CBOR.Write as CBOR
+import           Control.Exception (assert)
 import           Control.Monad
 import           Control.Monad.Except
 import           Control.Tracer (Tracer, nullTracer)
@@ -64,10 +64,10 @@ import           Cardano.Prelude (allNoUnexpectedThunks)
 
 import           Control.Monad.Class.MonadThrow
 
-import           Ouroboros.Network.Block (pattern BlockPoint,
+import           Ouroboros.Network.Block (pattern BlockPoint, ChainHash (..),
                      pattern GenesisPoint, HasHeader (..), HeaderHash, Point,
-                     SlotNo, atSlot, blockPoint, genesisPoint, pointSlot,
-                     withHash)
+                     SlotNo, atSlot, blockPoint, genesisPoint, pointHash,
+                     pointSlot, withHash)
 import           Ouroboros.Network.Point (WithOrigin (..))
 
 import           Ouroboros.Consensus.Util.IOLike
@@ -212,7 +212,7 @@ mkImmDB immDB decBlock encBlock epochInfo isEBB err = ImmDB {..}
 -- 'ReadFutureSlotError' wrapped in a 'ImmDbFailure' is thrown.
 getBlockWithPoint :: forall m blk. (MonadCatch m, HasHeader blk, HasCallStack)
                   => ImmDB m blk -> Point blk -> m (Maybe blk)
-getBlockWithPoint _  GenesisPoint   = throwM NoGenesisBlock
+getBlockWithPoint _  GenesisPoint = throwM NoGenesisBlock
 getBlockWithPoint db BlockPoint { withHash = hash, atSlot = slot } =
     -- Unfortunately a point does not give us enough information to determine
     -- whether this corresponds to a regular block or an EBB. We will
@@ -249,6 +249,7 @@ getBlockWithPoint db BlockPoint { withHash = hash, atSlot = slot } =
       Tip (ImmDB.Block _)     -> return Nothing
       TipGen                  -> return Nothing
 
+    -- TODO do this more efficiently in the ImmutableDB
     -- | First try to read the block at the slot, if the block's hash doesn't
     -- match the expect hash, try reading the EBB at that slot.
     getBlockThenEBB :: m (Maybe blk)
@@ -353,10 +354,9 @@ getBlob db epochOrSlot = withDB db $ \imm ->
 appendBlock :: (MonadCatch m, HasHeader blk, HasCallStack)
             => ImmDB m blk -> blk -> m ()
 appendBlock db@ImmDB{..} b = withDB db $ \imm -> case isEBB b of
-    Nothing   ->
+    Nothing      ->
       ImmDB.appendBlock imm slotNo hash (CBOR.toBuilder <$> encBlock b)
-    Just _ -> do -- TODO let isEBB return a 'IsEBB'
-      epochNo <- epochInfoEpoch slotNo
+    Just epochNo ->
       ImmDB.appendEBB imm epochNo hash (CBOR.toBuilder <$> encBlock b)
   where
     hash   = blockHash b
@@ -422,7 +422,7 @@ registeredStream db registry start end = do
 --
 -- When passed @'StreamFromInclusive' pt@ where @pt@ refers to Genesis, a
 -- 'NoGenesisBlock' exception will be thrown.
-streamBlocksFrom :: forall m blk. (IOLike m, HasHeader blk)
+streamBlocksFrom :: forall m blk. IOLike m
                  => ImmDB m blk
                  -> ResourceRegistry m
                  -> StreamFrom blk
@@ -462,71 +462,32 @@ streamBlocksFrom db registry from = runExceptT $ case from of
 
 -- | Stream blocks after the given point
 --
--- See also 'streamBlobsAfter'.
---
--- PRECONDITION: the exclusive lower bound is part of the ImmutableDB.
+-- PRECONDITION: the exclusive lower bound is part of the ImmutableDB, if not,
+-- 'ImmDbMissingBlockPoint' is thrown.
 streamBlocksAfter :: forall m blk. (IOLike m, HasHeader blk)
                   => ImmDB m blk
                   -> ResourceRegistry m
                   -> Point blk -- ^ Exclusive lower bound
                   -> m (Iterator (HeaderHash blk) m blk)
 streamBlocksAfter db registry low =
-    parseIterator db <$> streamBlobsAfter db registry low
-
--- | Stream blobs after the given point
---
--- Our 'Point' based API and the 'SlotNo' + @hash@ based API of the
--- 'ImmutableDB' have a slight impedance mismatch: the bounds offered by the
--- 'ImmutableDB' are inclusive, /if specified/. We can't offer that here,
--- since it does not make sense to stream /from/ (inclusive) the genesis
--- block. Therefore we provide an /exclusive/ lower bound as a 'Point': if the
--- 'Point' refers to the genesis block we don't give the 'ImmutableDB' a lower
--- bound at all; if it doesn't, we pass the hash as the lower bound to the
--- 'ImmutableDB' and then step the iterator one block to skip that first
--- block.
-streamBlobsAfter :: forall m blk. (IOLike m, HasHeader blk)
-                 => ImmDB m blk
-                 -> ResourceRegistry m
-                 -> Point blk -- ^ Exclusive lower bound
-                 -> m (Iterator (HeaderHash blk) m Lazy.ByteString)
-streamBlobsAfter db registry low =
     registeredStream db registry low' Nothing >>= \case
-      -- CONTINUE
-      Left e -> undefined -- throwM $ ImmDbHashMismatch undefined undefined undefined
+      Left  _   -> throwM $ ImmDbMissingBlockPoint low
       Right itr -> do
         -- Skip the exclusive lower bound
-        void $ iteratorNext db itr
-        return itr
+        iteratorNext db itr >>= \case
+          IteratorExhausted       ->
+            throwM $ ImmDbUnexpectedIteratorExhausted low
+          -- The hash must match the lower bound's hash.
+          IteratorResult _ hash _ ->
+            assert (pointHash low == BlockHash hash) return ()
+          IteratorEBB    _ hash _ ->
+            assert (pointHash low == BlockHash hash) return ()
+        return $ parseIterator db itr
   where
     low' :: Maybe (SlotNo, HeaderHash blk)
     low' = case low of
       GenesisPoint         -> Nothing
       BlockPoint slot hash -> Just (slot, hash)
-
-    -- -- Skip the first block (if any) to provide an /exclusive/ lower bound
-    -- --
-    -- -- Take advantage of the opportunity to also verify the hash (which the
-    -- -- ImmutableDB can't, since it cannot compute hashes)
-    -- skipAndCheck :: Iterator (HeaderHash blk) m Lazy.ByteString -> m ()
-    -- skipAndCheck itr =
-    --     case low' of
-    --       Nothing           -> return ()
-    --       Just (slot, hash) -> do
-    --         skipped <- parseIteratorResult db =<< iteratorNext db itr
-    --         case skipped of
-    --           IteratorResult slot' _ blk -> -- TODO use hash
-    --               unless (hash == hash' && slot == slot') $
-    --                 throwM $ ImmDbHashMismatch low hash hash'
-    --             where
-    --               hash' = blockHash blk
-    --           IteratorEBB _epoch hash' _ebb ->
-    --               -- We can't easily verify the slot, since all we have is the
-    --               -- epoch number. We could do the conversion but it doesn't
-    --               -- really matter: the hash uniquely determines the block.
-    --               unless (hash == hash') $
-    --                 throwM $ ImmDbHashMismatch low hash hash'
-    --           IteratorExhausted ->
-    --               throwM $ ImmDbUnexpectedIteratorExhausted low
 
 -- | Parse the bytestrings returned by an iterator as blocks.
 parseIterator :: MonadCatch m

@@ -1179,7 +1179,7 @@ mkArgs cfg initLedger tracer registry
     , cdbDecodeChainState = decode
 
       -- Encoders
-    , cdbEncodeBlock      = encode
+    , cdbEncodeBlock      = testBlockToBinaryInfo
     , cdbEncodeHash       = encode
     , cdbEncodeLedger     = encode
     , cdbEncodeChainState = encode
@@ -1203,9 +1203,7 @@ mkArgs cfg initLedger tracer registry
       -- Integration
     , cdbNodeConfig       = cfg
     , cdbEpochInfo        = fixedSizeEpochInfo fixedEpochSize
-    , cdbIsEBB            = \b -> case testBlockIsEBB b of
-                              IsEBB    -> Just (blockHash b)
-                              IsNotEBB -> Nothing
+    , cdbIsEBB            = testBlockEpochNoIfEBB fixedEpochSize
     , cdbGenesis          = return initLedger
 
     -- Misc

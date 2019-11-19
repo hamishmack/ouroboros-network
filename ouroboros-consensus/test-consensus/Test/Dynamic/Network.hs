@@ -243,7 +243,7 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
         , cdbDecodeLedger     = nodeDecodeLedgerState cfg
         , cdbDecodeChainState = nodeDecodeChainState (Proxy @blk)
           -- Encoders
-        , cdbEncodeBlock      = nodeEncodeBlock cfg
+        , cdbEncodeBlock      = nodeEncodeBlockWithInfo cfg
         , cdbEncodeHash       = nodeEncodeHeaderHash (Proxy @blk)
         , cdbEncodeLedger     = nodeEncodeLedgerState cfg
         , cdbEncodeChainState = nodeEncodeChainState (Proxy @blk)
@@ -263,9 +263,7 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
           -- Integration
         , cdbNodeConfig       = cfg
         , cdbEpochInfo        = epochInfo
-        , cdbIsEBB            = \blk -> if nodeIsEBB blk
-                                        then Just (blockHash blk)
-                                        else Nothing
+        , cdbIsEBB            = nodeIsEBB
         , cdbGenesis          = return initLedger
         -- Misc
         , cdbTracer           = Tracer $ \case

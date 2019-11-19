@@ -348,6 +348,7 @@ test-suite test-storage
                     Test.Ouroboros.Storage.ImmutableDB.CumulEpochSizes
                     Test.Ouroboros.Storage.ImmutableDB.Mock
                     Test.Ouroboros.Storage.ImmutableDB.Model
+                    Test.Ouroboros.Storage.ImmutableDB.Primary
                     Test.Ouroboros.Storage.ImmutableDB.StateMachine
                     Test.Ouroboros.Storage.LedgerDB
                     Test.Ouroboros.Storage.LedgerDB.InMemory
