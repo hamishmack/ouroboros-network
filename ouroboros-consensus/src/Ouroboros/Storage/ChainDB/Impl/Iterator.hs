@@ -551,7 +551,7 @@ implIteratorNext registry varItState IteratorEnv{..} =
             ImmDB.streamBlocksFrom itImmDB registry continueFrom >>= \case
               -- The block was not found in the ImmutableDB, it must have been
               -- garbage-collected
-              Left  e     -> do
+              Left   _    -> do
                 trace $ BlockGCedFromVolDB hash
                 return $ IteratorBlockGCed hash
               Right immIt -> nextInImmDBRetry Nothing immIt (hash NE.:| hashes)

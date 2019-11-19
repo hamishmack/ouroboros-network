@@ -290,7 +290,9 @@ initIteratorEnv TestSetup { immutable, volatile } tracer = do
     openImmDB chain = do
         (_immDBModel, immDB) <- ImmDB.openDBMock EH.monadCatch (const epochSize)
         forM_ (Chain.toOldestFirst chain) $ \block ->
-          ImmDB.appendBlock immDB (blockSlot block) (serialiseIncremental block)
+          ImmDB.appendBlock immDB
+            (blockSlot block) (blockHash block)
+            (addDummyBinaryInfo (serialiseIncremental block))
         return $ mkImmDB immDB (const <$> decode) (addDummyBinaryInfo . encode)
           epochInfo isEBB EH.monadCatch
       where
