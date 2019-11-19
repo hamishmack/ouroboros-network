@@ -27,8 +27,8 @@ import           Ouroboros.Consensus.Util.IOLike
 
 import           Ouroboros.Storage.Common
 import           Ouroboros.Storage.FS.API (HasFS)
+import           Ouroboros.Storage.FS.CRC
 
-import           Ouroboros.Storage.ImmutableDB.Impl.Index.Secondary (CRC)
 import qualified Ouroboros.Storage.ImmutableDB.Impl.Index.Secondary as Secondary
 import           Ouroboros.Storage.ImmutableDB.Types
 
@@ -72,18 +72,20 @@ epochFileParser' getSlotNo getHash getPrevHash
     . Util.CBOR.readIncrementalOffsets hasFS decoder
   where
     decoder :: forall s. Decoder s (BL.ByteString -> BlockInfo hash)
-    decoder = (extractBlockInfo .) <$> decodeBlock
+    decoder = extractBlockInfo <$> decodeBlock
 
     -- | It is important that we don't first parse all blocks, storing them
     -- all in memory, and only /then/ extract the information we need. So
     -- make sure we don't create thunks refering to the whole block.
-    extractBlockInfo :: blk -> BlockInfo hash
-    extractBlockInfo blk =
-        -- TODO CRC
-        getBinaryInfo blk $> (hash, prevHash, Secondary.CRC, blockOrEBB)
+    extractBlockInfo :: (BL.ByteString -> blk)
+                     -> (BL.ByteString -> BlockInfo hash)
+    extractBlockInfo f bs =
+        getBinaryInfo blk $> (hash, prevHash, crc, blockOrEBB)
       where
+        !blk        = f bs
         !hash       = getHash blk
         !prevHash   = getPrevHash blk
+        !crc        = computeCRC bs
         !blockOrEBB = case isEBB blk of
           Just epoch -> EBB epoch
           Nothing    -> Block (getSlotNo blk)

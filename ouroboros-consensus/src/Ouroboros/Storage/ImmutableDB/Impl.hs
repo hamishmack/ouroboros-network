@@ -117,6 +117,7 @@ import           Ouroboros.Storage.Common
 import           Ouroboros.Storage.EpochInfo
 import           Ouroboros.Storage.FS.API
 import           Ouroboros.Storage.FS.API.Types hiding (allowExisting)
+import           Ouroboros.Storage.FS.CRC
 import           Ouroboros.Storage.Util.ErrorHandling (ErrorHandling (..))
 
 import           Ouroboros.Storage.ImmutableDB.API
@@ -618,14 +619,14 @@ appendEpochSlot hasFS err epochInfo hashInfo epochSlot blockOrEBB headerHash
       (closeOpenStateHandles hasFS lastState) $ do
 
         -- Write to the epoch file
-        blockSize <- hPut hasFS _currentEpochHandle binaryBlob
+        (blockSize, crc) <- hPutCRC hasFS _currentEpochHandle binaryBlob
 
         -- Write to the secondary index file
         let entry = Secondary.Entry
               { blockOffset  = _currentEpochOffset
               , headerOffset = HeaderOffset headerOffset
               , headerSize   = HeaderSize headerSize
-              , checksum     = Secondary.CRC -- TODO
+              , checksum     = crc
               , headerHash   = headerHash
               , blockOrEBB   = blockOrEBB
               }

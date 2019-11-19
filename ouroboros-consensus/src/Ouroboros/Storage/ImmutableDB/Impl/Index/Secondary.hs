@@ -15,7 +15,6 @@ module Ouroboros.Storage.ImmutableDB.Impl.Index.Secondary
   , shiftBlockOffset
   , HeaderOffset (..)
   , HeaderSize (..)
-  , CRC (..) -- TODO
   , BlockSize (..)
   , readEntry
   , readEntries
@@ -32,7 +31,6 @@ import qualified Data.Binary.Get as Get
 import qualified Data.Binary.Put as Put
 import qualified Data.ByteString.Lazy as Lazy
 import           Data.Coerce
-import           Data.Functor (($>))
 import           Data.Word
 import           Foreign.Storable (Storable (sizeOf))
 import           GHC.Generics (Generic)
@@ -49,6 +47,7 @@ import           Ouroboros.Consensus.Block (IsEBB (..))
 import           Ouroboros.Storage.Common (EpochNo (..))
 import           Ouroboros.Storage.FS.API
 import           Ouroboros.Storage.FS.API.Types
+import           Ouroboros.Storage.FS.CRC
 import           Ouroboros.Storage.Util.ErrorHandling (ErrorHandling (..))
 
 import           Ouroboros.Storage.ImmutableDB.Impl.Index.Primary
@@ -86,9 +85,6 @@ instance Binary HeaderSize where
   get = HeaderSize <$> Get.getWord16be
   put = Put.putWord16be . unHeaderSize
 
-data CRC = CRC
-  deriving (Eq, Show, Generic, NoUnexpectedThunks)
-
 getBlockOrEBB :: IsEBB -> Get BlockOrEBB
 getBlockOrEBB IsEBB    = EBB   . EpochNo <$> Get.getWord64be
 getBlockOrEBB IsNotEBB = Block . SlotNo  <$> Get.getWord64be
@@ -112,18 +108,18 @@ getEntry isEBB getHash = do
     blockOffset  <- get
     headerOffset <- get
     headerSize   <- get
-    checksum     <- Get.getWord32be $> CRC -- TODO
+    checksum     <- CRC <$> Get.getWord32be
     headerHash   <- getHash
     blockOrEBB   <- getBlockOrEBB isEBB
     return Entry { blockOffset, headerOffset, headerSize, checksum, headerHash, blockOrEBB }
 
 -- TODO property for getEntry <-> putEntry
 putEntry :: (hash -> Put) -> Entry hash -> Put
-putEntry putHash Entry { blockOffset, headerOffset, headerSize, checksum, headerHash, blockOrEBB } =
+putEntry putHash Entry { blockOffset, headerOffset, headerSize, checksum = CRC crc, headerHash, blockOrEBB } =
     put     blockOffset
  <> put     headerOffset
  <> put     headerSize
- <> Put.putWord32be 0 -- TODO checksum
+ <> Put.putWord32be crc
  <> putHash headerHash
  <> putBlockOrEBB blockOrEBB
 
