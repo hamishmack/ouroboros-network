@@ -65,10 +65,10 @@ import           Cardano.Prelude (allNoUnexpectedThunks)
 
 import           Control.Monad.Class.MonadThrow
 
-import           Ouroboros.Network.Block (pattern BlockPoint, ChainHash (..),
+import           Ouroboros.Network.Block (pattern BlockPoint,
                      pattern GenesisPoint, HasHeader (..), HeaderHash, Point,
-                     SlotNo, atSlot, blockPoint, genesisPoint, pointHash,
-                     pointSlot, withHash)
+                     SlotNo, atSlot, blockPoint, genesisPoint, pointSlot,
+                     withHash)
 import           Ouroboros.Network.Point (WithOrigin (..))
 
 import           Ouroboros.Consensus.Util.IOLike
@@ -477,15 +477,18 @@ streamBlocksAfter db registry low =
     registeredStream db registry low' Nothing >>= \case
       Left  _   -> throwM $ ImmDbMissingBlockPoint low
       Right itr -> do
-        -- Skip the exclusive lower bound
-        iteratorNext db itr >>= \case
-          IteratorExhausted       ->
-            throwM $ ImmDbUnexpectedIteratorExhausted low
-          -- The hash must match the lower bound's hash.
-          IteratorResult _ hash _ ->
-            assert (pointHash low == BlockHash hash) return ()
-          IteratorEBB    _ hash _ ->
-            assert (pointHash low == BlockHash hash) return ()
+        case low of
+          GenesisPoint          -> return ()
+          -- Skip the exclusive lower bound
+          BlockPoint _slot hash -> iteratorNext db itr >>= \case
+              IteratorExhausted        ->
+                throwM $ ImmDbUnexpectedIteratorExhausted low
+              -- The hash must match the lower bound's hash. The ImmutableDB
+              -- already checks this. Trust, but verify.
+              IteratorResult _ hash' _ ->
+                assert (hash == hash') return ()
+              IteratorEBB    _ hash' _ ->
+                assert (hash == hash') return ()
         return $ parseIterator db itr
   where
     low' :: Maybe (SlotNo, HeaderHash blk)
