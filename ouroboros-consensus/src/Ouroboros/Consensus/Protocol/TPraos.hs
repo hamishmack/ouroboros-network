@@ -24,7 +24,6 @@ module Ouroboros.Consensus.Protocol.TPraos (
     TPraos
   , TPraosFields(..)
   , TPraosToSign(..)
-  , TPraosLedgerView(..)
   , TPraosParams(..)
   , TPraosProof(..)
   , TPraosIsCoreNode(..)
@@ -46,6 +45,7 @@ import           Data.Proxy (Proxy (..))
 import           Data.Word (Word64)
 import           GHC.Generics (Generic)
 import           Control.State.Transition (TRC(..), applySTS)
+import           Cardano.Ledger.Shelley.API as API (LedgerView(..))
 import           Cardano.Ledger.Shelley.Crypto
 import           Cardano.Crypto.DSIGN.Class (VerKeyDSIGN)
 import           Cardano.Crypto.Hash.Class (HashAlgorithm (..))
@@ -64,10 +64,8 @@ import qualified Ouroboros.Consensus.Util.AnchoredFragment as AF
 import BaseTypes (Nonce, UnitInterval)
 import BlockChain (BHeader, HashHeader, mkSeed, seedEta, seedL)
 import Delegation.Certificates (PoolDistr(..))
-import Keys (DiscVKey(..), GenDelegs(..), GenKeyHash, KeyHash, hashKey)
+import Keys (DiscVKey(..), GenDelegs(..), KeyHash, hashKey)
 import OCert (OCert(..))
-import PParams (PParams)
-import Slot (Slot(..))
 import STS.Prtcl (PRTCL)
 import qualified STS.Prtcl as STS
 
@@ -174,34 +172,6 @@ data TPraosProof c
 
 instance TPraosCrypto c => NoUnexpectedThunks (TPraosProof c)
 
-data TPraosLedgerView c = TPraosLedgerView {
-    -- | Stake distribution
-    tpraosLedgerViewPoolDistr :: PoolDistr c
-  , tpraosLedgerViewProtParams :: PParams
-  , tpraosLedgerViewDelegationMap :: GenDelegs c
-  , tpraosLedgerViewEpochNonce :: Nonce
-  , tpraosLedgerViewLeaderVal :: UnitInterval
-    -- | Determines which slots are considered to be part of the overlay
-    -- schedule - that is, slots for whom block issuance is reserved to the core
-    -- nodes operating under Ouborobos BFT rules. There are three cases:
-    --
-    -- - The slot is not in the overlay schedule. Then it is considered under
-    --   Praos rules.
-    -- - The slot is reserved in the schedule to a specific genesis keyholder
-    --   ('Just keyHash'). Then the delegate of this stakeholder has the unique
-    --   right to issue a block in this slot.
-    -- - The slot is reserved in the schedule to 'Nothing'. Then nobody is
-    --   eligible to issue a block in this slot.
-    --
-    -- The last situation is required to reconcile the presence of BFT (which
-    -- issues blocks in every slot) in the overlay schedule with the shorter
-    -- slot lengths to be used under Praos, which issues blocks only in some
-    -- proportion (the 'active slot coefficient') of slots.
-  , tpraosLedgerViewOverlaySchedule :: Map.Map Slot (Maybe (GenKeyHash c))
-  } deriving Generic
-
-instance NoUnexpectedThunks (TPraosLedgerView c)
-
 {-------------------------------------------------------------------------------
   Protocol proper
 -------------------------------------------------------------------------------}
@@ -235,7 +205,7 @@ instance TPraosCrypto c => OuroborosTag (TPraos c) where
   protocolSecurityParam = tpraosSecurityParam . tpraosParams
 
   type NodeState       (TPraos c) = Maybe (TPraosIsCoreNode c)
-  type LedgerView      (TPraos c) = TPraosLedgerView c
+  type LedgerView      (TPraos c) = API.LedgerView c
   type IsLeader        (TPraos c) = TPraosProof c
   type ValidationErr   (TPraos c) = [[STS.PredicateFailure (PRTCL c)]]
   type CanValidate     (TPraos c) = HeaderSupportsTPraos c
@@ -249,14 +219,14 @@ instance TPraosCrypto c => OuroborosTag (TPraos c) where
           let mkSeed' = mkSeed @c
               vkhCold = hashKey $ ocertVkCold tpraosIsCoreNodeOpCert
               t = leaderThreshold cfg lv vkhCold
-              eta0 = tpraosLedgerViewEpochNonce lv
+              eta0 = prtclStateEpochNonce $ ChainState.toPRTCLState cs
               prevHash = prtclStateHash @c $ ChainState.toPRTCLState cs
               rho' = mkSeed' seedEta (convertSlot slot) eta0 prevHash
               y' = mkSeed' seedL (convertSlot slot) eta0 prevHash
           rho <- evalCertified () rho' tpraosSignKeyVRF
           y   <- evalCertified () y'   tpraosSignKeyVRF
           -- First, check whether we're in the overlay schedule
-          case (Map.lookup (convertSlot slot) $ tpraosLedgerViewOverlaySchedule lv) of
+          case (Map.lookup (convertSlot slot) $ lvOverlaySched lv) of
             Nothing -> return $
               -- Slot isn't in the overlay schedule, so we're in Praos
               if fromIntegral (certifiedNatural y) < t
@@ -273,7 +243,7 @@ instance TPraosCrypto c => OuroborosTag (TPraos c) where
             Just (Just gkhash) ->
               -- The given genesis key has authority to produce a block in this
               -- slot. Check whether we're its delegate.
-              let GenDelegs dlgMap = tpraosLedgerViewDelegationMap lv
+              let GenDelegs dlgMap = lvGenDelegs lv
               in do
                 let verKey = ocertVkCold tpraosIsCoreNodeOpCert
                 return $ case Map.lookup gkhash dlgMap of
@@ -296,10 +266,10 @@ instance TPraosCrypto c => OuroborosTag (TPraos c) where
 
     newCS <- ExceptT . return $ applySTS @(PRTCL c)
       $ TRC ( STS.PrtclEnv
-                (tpraosLedgerViewProtParams lv)
-                (tpraosLedgerViewOverlaySchedule lv)
-                (tpraosLedgerViewPoolDistr lv)
-                (tpraosLedgerViewDelegationMap lv)
+                (lvProtParams lv)
+                (lvOverlaySched lv)
+                (lvPoolDistr lv)
+                (lvGenDelegs lv)
                 (convertSlot slot)
                 (isNewEpoch slot (ChainState.lastSlot cs))
             , ChainState.toPRTCLState cs
@@ -341,11 +311,11 @@ phi TPraosNodeConfig{..} r = 1 - (1 - tpraosLeaderF) ** fromRational r
 
 leaderThreshold :: forall c. TPraosCrypto c
                 => NodeConfig (TPraos c)
-                -> LedgerView (TPraos c)
+                -> API.LedgerView c
                 -> KeyHash c -- ^ Key hash of the pool
                 -> Double
 leaderThreshold nc lv kh =
-    let PoolDistr pd = tpraosLedgerViewPoolDistr lv
+    let PoolDistr pd = lvPoolDistr lv
         a = maybe 0 fst $ Map.lookup kh pd
     in  2 ^ (byteCount (Proxy :: Proxy (TPraosHash c)) * 8) * phi nc a
 
@@ -353,6 +323,11 @@ prtclStateHash
   :: STS.State (PRTCL c)
   -> BlockChain.HashHeader c
 prtclStateHash (STS.PrtclState _ h _ _ _ _) = h
+
+prtclStateEpochNonce
+  :: STS.State (PRTCL c)
+  -> Nonce
+prtclStateEpochNonce (STS.PrtclState _ _ _ e _ _) = e
 
 {-------------------------------------------------------------------------------
   Condense
