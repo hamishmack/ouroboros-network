@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE DataKinds           #-}
@@ -40,6 +41,7 @@ import           Control.Monad (when)
 import qualified Control.Monad.STM as STM
 import           Control.Monad.Class.MonadSTM
 import           Control.Monad.Class.MonadThrow
+import           Control.Monad.Class.MonadTime
 import           Control.Exception (throwIO)
 import qualified Codec.CBOR.Term     as CBOR
 import           Codec.CBOR.Read (DeserialiseFailure)
@@ -174,7 +176,8 @@ connectToNode' encodeData decodeData muxTracer handshakeTracer peeridFn versions
     bearer <- Mx.socketAsMuxBearer muxTracer' sd
     Mx.muxBearerSetState muxTracer' bearer Mx.Connected
     traceWith muxTracer' $ Mx.MuxTraceHandshakeStart
-    mapp <- runPeerWithByteLimit
+    ts_start <- getMonotonicTime
+    !mapp <- runPeerWithByteLimit
               maxTransmissionUnit
               BL.length
               handshakeTracer
@@ -182,12 +185,13 @@ connectToNode' encodeData decodeData muxTracer handshakeTracer peeridFn versions
               peerid
               (Mx.muxBearerAsControlChannel bearer Mx.ModeInitiator)
               (handshakeClientPeer encodeData decodeData versions)
+    ts_end <- getMonotonicTime
     case mapp of
          Left err -> do
-             traceWith muxTracer' $ Mx.MuxTraceHandshakeClientError err
+             traceWith muxTracer' $ Mx.MuxTraceHandshakeClientError err (diffTime ts_end ts_start)
              throwIO err
          Right app -> do
-             traceWith muxTracer' Mx.MuxTraceHandshakeEnd
+             traceWith muxTracer' $ Mx.MuxTraceHandshakeClientEnd (diffTime ts_end ts_start)
              Mx.muxStart muxTracer' peerid (toApplication app) bearer
 
 
@@ -252,7 +256,7 @@ beginConnection muxTracer handshakeTracer encodeData decodeData acceptVersion fn
         (bearer :: MuxBearer ptcl IO) <- Mx.socketAsMuxBearer muxTracer' sd
         Mx.muxBearerSetState muxTracer' bearer Mx.Connected
         traceWith muxTracer' $ Mx.MuxTraceHandshakeStart
-        mapp <- runPeerWithByteLimit
+        !mapp <- runPeerWithByteLimit
                 maxTransmissionUnit
                 BL.length
                 handshakeTracer
@@ -265,7 +269,7 @@ beginConnection muxTracer handshakeTracer encodeData decodeData acceptVersion fn
             traceWith muxTracer' $ Mx.MuxTraceHandshakeServerError err
             throwIO err
           Right app -> do
-            traceWith muxTracer' $ Mx.MuxTraceHandshakeEnd
+            traceWith muxTracer' $ Mx.MuxTraceHandshakeServerEnd
             Mx.muxStart muxTracer' peerid (toApplication app) bearer
       RejectConnection st' _peerid -> pure $ Server.Reject st'
 
