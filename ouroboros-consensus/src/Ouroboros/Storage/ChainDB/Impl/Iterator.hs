@@ -662,9 +662,9 @@ implIteratorNext registry varItState IteratorEnv{..} =
         itRes   <- ImmDB.iteratorNext    itImmDB immIt
         hasNext <- ImmDB.iteratorHasNext itImmDB immIt
         case itRes of
-          ImmDB.IteratorResult _ blk -> select blk hasNext
-          ImmDB.IteratorEBB  _ _ blk -> select blk hasNext
-          ImmDB.IteratorExhausted    -> return Done
+          ImmDB.IteratorResult _ _ blk -> select blk hasNext
+          ImmDB.IteratorEBB    _ _ blk -> select blk hasNext
+          ImmDB.IteratorExhausted      -> return Done
       where
         close = ImmDB.iteratorClose itImmDB immIt
 

@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveAnyClass             #-}
 {-# LANGUAGE DeriveGeneric              #-}
+{-# LANGUAGE DeriveTraversable          #-}
 {-# LANGUAGE DerivingStrategies         #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RankNTypes                 #-}
@@ -51,7 +52,8 @@ newtype EpochSize = EpochSize { unEpochSize :: Word64 }
   File formats
 -------------------------------------------------------------------------------}
 
--- | The offset of a slot in an index file.
+-- | The offset of a slot in an index file. TODO move to where it is used +
+-- remove all mentions in the ImmutableDB
 type SlotOffset = Word64
 
 {-------------------------------------------------------------------------------
@@ -60,7 +62,15 @@ type SlotOffset = Word64
 
 -- | Tip of the chain
 data Tip r = Tip !r | TipGen
-  deriving (Show, Eq, Generic, NoUnexpectedThunks)
+  deriving (Show, Eq, Functor, Foldable, Traversable, Generic, NoUnexpectedThunks)
+
+-- | 'TipGen' is always smaller than 'Tip'
+instance Ord r => Ord (Tip r) where
+  compare x y = case (x, y) of
+    (TipGen, TipGen) -> EQ
+    (TipGen, _)      -> LT
+    (_,      TipGen) -> GT
+    (Tip a,  Tip b)  -> compare a b
 
 instance Condense r => Condense (Tip r) where
   condense TipGen  = "genesis"

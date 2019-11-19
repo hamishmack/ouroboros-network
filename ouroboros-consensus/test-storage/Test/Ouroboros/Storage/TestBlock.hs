@@ -16,9 +16,10 @@ module Test.Ouroboros.Storage.TestBlock where
 
 import qualified Codec.CBOR.Read as CBOR
 import qualified Codec.CBOR.Write as CBOR
-import           Codec.Serialise (Serialise (decode, encode))
+import           Codec.Serialise (Serialise (decode, encode), serialise)
 import           Control.Monad (forM)
 import           Control.Monad.Except (throwError)
+import           Data.Binary (Binary (get, put))
 import           Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Lazy as Lazy
 import           Data.FingerTree.Strict (Measured (..))
@@ -55,6 +56,8 @@ import qualified Ouroboros.Consensus.Util.SlotBounded as SB
 
 import           Ouroboros.Storage.FS.API (HasFS (..), withFile)
 import           Ouroboros.Storage.FS.API.Types
+import           Ouroboros.Storage.ImmutableDB.Types (BinaryInfo (..),
+                     HashInfo (..))
 
 import           Test.Util.Orphans.Arbitrary ()
 
@@ -72,7 +75,7 @@ data TestBlock = TestBlock {
 -- | Hash of a 'TestHeader'
 newtype TestHeaderHash = TestHeaderHash Int
   deriving stock    (Eq, Ord, Show, Generic)
-  deriving newtype  (Condense, NoUnexpectedThunks, Hashable, Serialise)
+  deriving newtype  (Condense, NoUnexpectedThunks, Hashable, Serialise, Binary)
 
 -- | Hash of a 'TestBody'
 newtype TestBodyHash = TestBodyHash Int
@@ -155,11 +158,25 @@ hashBody = TestBodyHash . hash
 hashHeader :: TestHeader -> TestHeaderHash
 hashHeader (TestHeader _ a b c d e) = TestHeaderHash (hash (a, b, c, d, e))
 
+testHashInfo :: HashInfo TestHeaderHash
+testHashInfo = HashInfo
+    { hashSize = 8
+    , getHash  = get
+    , putHash  = put
+    }
+
 testBlockIsEBB :: TestBlock -> IsEBB
 testBlockIsEBB = thIsEBB . testHeader
 
 testBlockToBuilder :: TestBlock -> Builder
 testBlockToBuilder = CBOR.toBuilder . encode
+
+testBlockToBinaryInfo :: TestBlock -> BinaryInfo Builder
+testBlockToBinaryInfo tb = BinaryInfo
+    { binaryBlob   = testBlockToBuilder tb
+    , headerOffset = 2 -- For the 'encodeListLen'
+    , headerSize   = fromIntegral $ Lazy.length $ serialise $ testHeader tb
+    }
 
 testBlockToLazyByteString :: TestBlock -> Lazy.ByteString
 testBlockToLazyByteString = CBOR.toLazyByteString . encode
@@ -172,6 +189,9 @@ testBlockFromLazyByteString bs = case CBOR.deserialiseFromBytes decode bs of
       -> a
       | otherwise
       -> error $ "left-over bytes: " <> show bs'
+
+testBlockFromBinaryInfo :: HasCallStack => BinaryInfo Lazy.ByteString -> TestBlock
+testBlockFromBinaryInfo = testBlockFromLazyByteString . binaryBlob
 
 {-------------------------------------------------------------------------------
   Creating blocks

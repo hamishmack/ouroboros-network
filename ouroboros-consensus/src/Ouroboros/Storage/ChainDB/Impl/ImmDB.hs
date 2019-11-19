@@ -36,13 +36,14 @@ module Ouroboros.Storage.ChainDB.Impl.ImmDB (
   , iteratorPeek
   , iteratorClose
     -- * Tracing
-  , ImmDB.TraceEvent
+  , TraceEvent
   , ImmDB.EpochFileError
     -- * Re-exports
   , Iterator
   , IteratorResult(..)
   , ImmDB.ValidationPolicy(..)
   , ImmDB.ImmutableDBError
+  , ImmDB.BinaryInfo (..)
     -- * Exported for testing purposes
   , mkImmDB
     -- * Exported for utilities
@@ -82,7 +83,7 @@ import           Ouroboros.Storage.EpochInfo (EpochInfo (..))
 import           Ouroboros.Storage.FS.API (HasFS, createDirectoryIfMissing)
 import           Ouroboros.Storage.FS.API.Types (MountPoint (..), mkFsPath)
 import           Ouroboros.Storage.FS.IO (ioHasFS)
-import           Ouroboros.Storage.ImmutableDB (ImmutableDB,
+import           Ouroboros.Storage.ImmutableDB (BinaryInfo (..), ImmutableDB,
                      Iterator (Iterator), IteratorResult (..))
 import qualified Ouroboros.Storage.ImmutableDB as ImmDB
 import qualified Ouroboros.Storage.ImmutableDB.Parser as ImmDB
@@ -95,9 +96,9 @@ data ImmDB m blk = ImmDB {
     , decBlock  :: !(forall s. Decoder s (Lazy.ByteString -> blk))
       -- ^ TODO introduce a newtype wrapper around the @s@ so we can use
       -- generics to derive the NoUnexpectedThunks instance.
-    , encBlock  :: !(blk -> Encoding)
+    , encBlock  :: !(blk -> BinaryInfo Encoding)
     , epochInfo :: !(EpochInfo m)
-    , isEBB     :: !(blk -> Maybe (HeaderHash blk))
+    , isEBB     :: !(blk -> Maybe EpochNo)
     , err       :: !(ErrorHandling ImmDB.ImmutableDBError m)
     }
 
@@ -114,6 +115,9 @@ instance NoUnexpectedThunks (ImmDB m blk) where
     , noUnexpectedThunks ctxt err
     ]
 
+-- | Short-hand for events traced by the ImmDB wrapper.
+type TraceEvent blk = ImmDB.TraceEvent (ImmDB.EpochFileError (HeaderHash blk))
+
 {-------------------------------------------------------------------------------
   Initialization
 -------------------------------------------------------------------------------}
@@ -125,13 +129,13 @@ data ImmDbArgs m blk = forall h. ImmDbArgs {
       immDecodeHash  :: forall s. Decoder s (HeaderHash blk)
     , immDecodeBlock :: forall s. Decoder s (Lazy.ByteString -> blk)
     , immEncodeHash  :: HeaderHash blk -> Encoding
-    , immEncodeBlock :: blk -> Encoding
+    , immEncodeBlock :: blk -> BinaryInfo Encoding
     , immErr         :: ErrorHandling ImmDB.ImmutableDBError m
     , immEpochInfo   :: EpochInfo m
     , immValidation  :: ImmDB.ValidationPolicy
-    , immIsEBB       :: blk -> Maybe (HeaderHash blk)
+    , immIsEBB       :: blk -> Maybe EpochNo
     , immHasFS       :: HasFS m h
-    , immTracer      :: Tracer m (ImmDB.TraceEvent ImmDB.EpochFileError)
+    , immTracer      :: Tracer m (TraceEvent blk)
     }
 
 -- | Default arguments when using the 'IO' monad
@@ -164,13 +168,12 @@ openDB :: (IOLike m, HasHeader blk) => ImmDbArgs m blk -> m (ImmDB m blk)
 openDB ImmDbArgs{..} = do
     createDirectoryIfMissing immHasFS True (mkFsPath [])
     immDB <- ImmDB.openDB
-               immDecodeHash
-               immEncodeHash
                immHasFS
                immErr
                immEpochInfo
+               (error "immHashInfo") -- TODO
                immValidation
-               (ImmDB.epochFileParser immHasFS immDecodeBlock immIsEBB)
+               parser
                immTracer
     return ImmDB
       { immDB        = immDB
@@ -180,13 +183,18 @@ openDB ImmDbArgs{..} = do
       , isEBB        = immIsEBB
       , err          = immErr
       }
+  where
+    parser = ImmDB.epochFileParser' immHasFS immDecodeBlock immIsEBB
+      -- TODO a more efficient to accomplish this? vvv
+      (void . immEncodeBlock)
+
 
 -- | For testing purposes
 mkImmDB :: ImmutableDB (HeaderHash blk) m
         -> (forall s. Decoder s (Lazy.ByteString -> blk))
-        -> (blk -> Encoding)
+        -> (blk -> BinaryInfo Encoding)
         -> EpochInfo m
-        -> (blk -> Maybe (HeaderHash blk))
+        -> (blk -> Maybe EpochNo)
         -> ErrorHandling ImmDB.ImmutableDBError m
         -> ImmDB m blk
 mkImmDB immDB decBlock encBlock epochInfo isEBB err = ImmDB {..}
@@ -329,9 +337,12 @@ getBlock db epochOrSlot = do
 getBlob :: (MonadCatch m, HasCallStack)
         => ImmDB m blk -> Either EpochNo SlotNo -> m (Maybe Lazy.ByteString)
 getBlob db epochOrSlot = withDB db $ \imm ->
+    -- TODO return hash
     case epochOrSlot of
       Left epochNo -> fmap snd <$> ImmDB.getEBB imm epochNo
-      Right slotNo -> ImmDB.getBinaryBlob imm slotNo
+      Right slotNo -> fmap snd <$> ImmDB.getBlock imm slotNo
+
+-- TODO 'getHeader'
 
 {-------------------------------------------------------------------------------
   Appending a block
@@ -344,11 +355,12 @@ appendBlock :: (MonadCatch m, HasHeader blk, HasCallStack)
             => ImmDB m blk -> blk -> m ()
 appendBlock db@ImmDB{..} b = withDB db $ \imm -> case isEBB b of
     Nothing   ->
-      ImmDB.appendBinaryBlob imm slotNo (CBOR.toBuilder (encBlock b))
-    Just hash -> do
+      ImmDB.appendBlock imm slotNo hash (CBOR.toBuilder <$> encBlock b)
+    Just _ -> do -- TODO let isEBB return a 'IsEBB'
       epochNo <- epochInfoEpoch slotNo
-      ImmDB.appendEBB imm epochNo hash (CBOR.toBuilder (encBlock b))
+      ImmDB.appendEBB imm epochNo hash (CBOR.toBuilder <$> encBlock b)
   where
+    hash   = blockHash b
     slotNo = blockSlot b
     EpochInfo{..} = epochInfo
 
@@ -368,17 +380,17 @@ registeredStream :: IOLike m
                  -> Maybe (SlotNo, HeaderHash blk)
                  -> Maybe (SlotNo, HeaderHash blk)
                  -> m (ImmDB.Iterator (HeaderHash blk) m Lazy.ByteString)
-registeredStream db registry start end = do
-    (key, it) <- allocate registry
-      (\_key -> withDB db $ \imm -> ImmDB.streamBinaryBlobs imm start end)
-      (iteratorClose db)
-    -- The iterator will be used by a thread that is unknown to the registry
-    -- (which, after all, is entirely internal to the chain DB). This means
-    -- that the registry cannot guarantee that the iterator will be live for
-    -- the duration of that thread, and indeed, it may not be: the chain DB
-    -- might be closed before that thread terminates. We will deal with this
-    -- in the chain DB itself (throw ClosedDBError exception).
-    return it { ImmDB.iteratorClose = unsafeRelease key }
+registeredStream db registry start end = do undefined -- TODO
+    -- (key, it) <- allocate registry
+    --   (\_key -> withDB db $ \imm -> ImmDB.streamBlocks imm start end)
+    --   (iteratorClose db)
+    -- -- The iterator will be used by a thread that is unknown to the registry
+    -- -- (which, after all, is entirely internal to the chain DB). This means
+    -- -- that the registry cannot guarantee that the iterator will be live for
+    -- -- the duration of that thread, and indeed, it may not be: the chain DB
+    -- -- might be closed before that thread terminates. We will deal with this
+    -- -- in the chain DB itself (throw ClosedDBError exception).
+    -- return it { ImmDB.iteratorClose = unsafeRelease key }
 
 -- | Stream blocks from the given 'StreamFrom'.
 --
@@ -445,9 +457,9 @@ streamBlocksFrom db registry from = runExceptT $ case from of
                       -> Point blk
                       -> Bool
     blockMatchesPoint itRes pt = case itRes of
-      ImmDB.IteratorExhausted    -> False
-      ImmDB.IteratorResult _ blk -> blockPoint blk == pt
-      ImmDB.IteratorEBB  _ _ blk -> blockPoint blk == pt
+      ImmDB.IteratorExhausted      -> False
+      ImmDB.IteratorResult _ _ blk -> blockPoint blk == pt
+      ImmDB.IteratorEBB    _ _ blk -> blockPoint blk == pt
 
 -- | Same as 'streamBlocksFrom', but without checking the hash of the lower
 -- bound.
@@ -527,7 +539,7 @@ streamBlobsAfter db registry low = do
           Just (slot, hash) -> do
             skipped <- parseIteratorResult db =<< iteratorNext db itr
             case skipped of
-              IteratorResult slot' blk ->
+              IteratorResult slot' _ blk -> -- TODO use hash
                   unless (hash == hash' && slot == slot') $
                     throwM $ ImmDbHashMismatch low hash hash'
                 where
@@ -562,11 +574,11 @@ parseIteratorResult db result =
     case result of
       IteratorExhausted ->
         return IteratorExhausted
-      (IteratorResult slotNo bs) ->
+      IteratorResult slotNo hash bs ->
         case parse (decBlock db) (Right slotNo) bs of
           Left  err -> throwM err
-          Right blk -> return $ IteratorResult slotNo blk
-      (IteratorEBB epochNo hash bs) ->
+          Right blk -> return $ IteratorResult slotNo hash blk
+      IteratorEBB epochNo hash bs ->
         case parse (decBlock db) (Left epochNo) bs of
           Left  err -> throwM err
           Right blk -> return $ IteratorEBB epochNo hash blk
