@@ -54,7 +54,7 @@ import           Foreign.Storable (sizeOf)
 import           GHC.Generics (Generic)
 import           GHC.Stack (HasCallStack)
 
-import           Control.Monad.Class.MonadThrow
+import           Control.Monad.Class.MonadThrow hiding (onException)
 
 import           Cardano.Prelude (NoUnexpectedThunks (..))
 
@@ -62,7 +62,8 @@ import           Ouroboros.Storage.Common (EpochNo, EpochSize)
 import           Ouroboros.Storage.FS.API
 import           Ouroboros.Storage.FS.API.Types (AbsOffset (..),
                      AllowExisting (..), OpenMode (..))
-import           Ouroboros.Storage.Util.ErrorHandling (ErrorHandling (..))
+import           Ouroboros.Storage.Util.ErrorHandling (ErrorHandling (..),
+                     onException)
 
 import           Ouroboros.Storage.ImmutableDB.Impl.Util (renderFile, runGet)
 import           Ouroboros.Storage.ImmutableDB.Layout

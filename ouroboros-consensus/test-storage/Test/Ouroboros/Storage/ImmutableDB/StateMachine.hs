@@ -253,9 +253,6 @@ runPure dbm mdb minternal (CmdErr mbErrors cmd its) =
       case (mbErrors, resp) of
         -- No simulated errors, just step
         (Nothing, _) -> return resp
-        -- Even though an error will be simulated, a user error will be thrown
-        -- before the simulated error can be thrown.
-        (Just _, Left (UserError {})) -> return resp
         -- An error will be simulated and thrown (not here, but in the real
         -- implementation). To mimic what the implementation will do, we only
         -- have to close the iterators, as the truncation during the reopening
@@ -719,8 +716,12 @@ semantics errorsVar hasFS db internal (At cmdErr) =
           run (semanticsCorruption hasFS) its db internal cmd
         case res of
           -- If the command resulted in a 'UserError', we didn't even get the
-          -- chance to run into a simulated error. Just return this error.
-          Left (UserError {})       -> return res
+          -- chance to run into a simulated error. Note that we still
+          -- truncate, because we can't predict whether we'll get a
+          -- 'UserError' or an 'UnexpectedError', as it depends on the
+          -- simulated error.
+          Left (UserError {})       ->
+            truncateAndReopen cmd its tipBefore
 
           -- We encountered a simulated error
           Left (UnexpectedError {}) -> do

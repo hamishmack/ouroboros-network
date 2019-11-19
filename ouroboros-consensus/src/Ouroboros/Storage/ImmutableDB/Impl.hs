@@ -105,6 +105,8 @@ import           Data.Functor (($>), (<&>))
 
 import           GHC.Stack (HasCallStack)
 
+import           Control.Monad.Class.MonadThrow (finally)
+
 import           Ouroboros.Network.Point (WithOrigin)
 
 import           Ouroboros.Consensus.Block (IsEBB (..))
@@ -683,9 +685,9 @@ startNewEpoch hasFS@HasFS{..} epochInfo = do
         backfillOffsets = Primary.backfill
           (succ lastRelSlot) nextFreeRelSlot _currentSecondaryOffset
 
-    lift $ Primary.appendOffsets hasFS _currentPrimaryHandle backfillOffsets
-
-    lift $ closeOpenStateHandles hasFS st
+    lift $
+      Primary.appendOffsets hasFS _currentPrimaryHandle backfillOffsets
+      `finally` closeOpenStateHandles hasFS st
 
     st' <- lift $ mkOpenState
       hasFS (succ _currentEpoch) _nextIteratorID _currentTip MustBeNew
