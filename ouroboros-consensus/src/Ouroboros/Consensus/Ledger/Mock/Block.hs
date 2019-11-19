@@ -5,6 +5,7 @@
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
+{-# LANGUAGE NamedFieldPuns             #-}
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE RecordWildCards            #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
@@ -43,12 +44,17 @@ module Ouroboros.Consensus.Ledger.Mock.Block (
   , encodeSimpleHeader
   , decodeSimpleHeader
   , simpleBlockBinaryInfo
+  , simpleBlockHashInfo
   ) where
 
 import qualified Codec.CBOR.Decoding as CBOR
 import qualified Codec.CBOR.Encoding as CBOR
+import qualified Codec.CBOR.Read as CBOR
+import qualified Codec.CBOR.Write as CBOR
 import           Codec.Serialise (Serialise (..), serialise)
 import           Control.Monad.Except
+import qualified Data.Binary.Get as Get
+import qualified Data.Binary.Put as Put
 import qualified Data.ByteString.Lazy as Lazy
 import           Data.FingerTree.Strict (Measured (..))
 import           Data.Proxy
@@ -56,7 +62,7 @@ import           Data.Typeable
 import           Data.Word
 import           GHC.Generics (Generic)
 
-import           Cardano.Binary (ToCBOR (..))
+import           Cardano.Binary (FromCBOR (..), ToCBOR (..))
 import           Cardano.Crypto.Hash
 import           Cardano.Prelude (NoUnexpectedThunks (..))
 
@@ -72,7 +78,7 @@ import           Ouroboros.Consensus.Util ((.:))
 import           Ouroboros.Consensus.Util.Condense
 import           Ouroboros.Consensus.Util.Orphans ()
 
-import           Ouroboros.Storage.ImmutableDB (BinaryInfo (..))
+import           Ouroboros.Storage.ImmutableDB (BinaryInfo (..), HashInfo (..))
 
 {-------------------------------------------------------------------------------
   Definition of a block
@@ -175,7 +181,7 @@ instance (SimpleCrypto c, Typeable ext) => HasHeader (SimpleHeader c ext) where
   blockInvariant = const True
 
 {-------------------------------------------------------------------------------
-  HasHeader insatnce for SimpleBlock
+  HasHeader instance for SimpleBlock
 -------------------------------------------------------------------------------}
 
 type instance HeaderHash (SimpleBlock' c ext ext') =
@@ -368,7 +374,7 @@ instance Condense ext' => Condense (SimpleBlock' c ext ext') where
       SimpleBody{..}      = simpleBody
 
 {-------------------------------------------------------------------------------
-  Serialise instances
+  Serialisation
 -------------------------------------------------------------------------------}
 
 instance ToCBOR SimpleBody where
@@ -404,3 +410,22 @@ simpleBlockBinaryInfo b = BinaryInfo
     , headerOffset = 2 -- For the 'encodeListLen'
     , headerSize   = fromIntegral $ Lazy.length $ serialise (getHeader b)
     }
+
+-- | As we can't simply create a 'Hash' from a 'ByteString', we're (ab)using
+-- its 'FromCBOR'/'ToCBOR' instances. This means we're adding an extra byte
+-- for the CBOR tag.
+simpleBlockHashInfo
+  :: forall c ext ext'. (SimpleCrypto c, Typeable ext, Typeable ext')
+  => HashInfo (HeaderHash (SimpleBlock' c ext ext'))
+simpleBlockHashInfo = HashInfo
+    { hashSize
+    , getHash  = do
+        bl <- Get.getLazyByteString (fromIntegral hashSize)
+        case CBOR.deserialiseFromBytes fromCBOR bl of
+          Left e       -> fail (show e)
+          Right (_, h) -> return h
+    , putHash  = Put.putByteString . CBOR.toStrictByteString . toCBOR
+    }
+  where
+    -- + 1 For the CBOR tag
+    hashSize = 1 + fromIntegral (byteCount (Proxy @(SimpleHash c)))

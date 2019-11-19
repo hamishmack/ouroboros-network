@@ -59,6 +59,8 @@ instance RunNode ByronBlock where
   nodeProtocolMagicId     = const
                           $ Genesis.gdProtocolMagicId
                           . extractGenesisData
+  nodeHashInfo            = const byronHashInfo
+
 
   nodeEncodeBlockWithInfo = const encodeByronBlockWithInfo
   nodeEncodeHeader        = const encodeByronHeader

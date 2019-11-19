@@ -65,6 +65,7 @@ type ImmTipWithHash hash = Tip (BlockOrEBB, hash)
 -- on-disk.
 data HashInfo hash = HashInfo
   { hashSize :: !Word32
+    -- ^ A fixed size
   , getHash  :: !(Get hash)
   , putHash  :: !(hash -> Put)
   }

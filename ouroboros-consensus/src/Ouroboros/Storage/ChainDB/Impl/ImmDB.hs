@@ -42,6 +42,7 @@ module Ouroboros.Storage.ChainDB.Impl.ImmDB (
   , ImmDB.ValidationPolicy(..)
   , ImmDB.ImmutableDBError
   , ImmDB.BinaryInfo (..)
+  , ImmDB.HashInfo (..)
     -- * Exported for testing purposes
   , mkImmDB
     -- * Exported for utilities
@@ -82,8 +83,8 @@ import           Ouroboros.Storage.EpochInfo (EpochInfo (..))
 import           Ouroboros.Storage.FS.API (HasFS, createDirectoryIfMissing)
 import           Ouroboros.Storage.FS.API.Types (MountPoint (..), mkFsPath)
 import           Ouroboros.Storage.FS.IO (ioHasFS)
-import           Ouroboros.Storage.ImmutableDB (BinaryInfo (..), ImmutableDB,
-                     Iterator (Iterator), IteratorResult (..))
+import           Ouroboros.Storage.ImmutableDB (BinaryInfo (..), HashInfo (..),
+                     ImmutableDB, Iterator (Iterator), IteratorResult (..))
 import qualified Ouroboros.Storage.ImmutableDB as ImmDB
 import qualified Ouroboros.Storage.ImmutableDB.Parser as ImmDB
 import           Ouroboros.Storage.Util.ErrorHandling (ErrorHandling)
@@ -131,6 +132,7 @@ data ImmDbArgs m blk = forall h. ImmDbArgs {
     , immEncodeBlock :: blk -> BinaryInfo Encoding
     , immErr         :: ErrorHandling ImmDB.ImmutableDBError m
     , immEpochInfo   :: EpochInfo m
+    , immHashInfo    :: HashInfo (HeaderHash blk)
     , immValidation  :: ImmDB.ValidationPolicy
     , immIsEBB       :: blk -> Maybe EpochNo
     , immHasFS       :: HasFS m h
@@ -146,6 +148,7 @@ data ImmDbArgs m blk = forall h. ImmDbArgs {
 -- * 'immEncodeHash'
 -- * 'immEncodeBlock'
 -- * 'immEpochInfo'
+-- * 'immHashInfo'
 -- * 'immValidation'
 -- * 'immIsEBB'
 defaultArgs :: FilePath -> ImmDbArgs IO blk
@@ -158,6 +161,7 @@ defaultArgs fp = ImmDbArgs{
     , immEncodeHash  = error "no default for immEncodeHash"
     , immEncodeBlock = error "no default for immEncodeBlock"
     , immEpochInfo   = error "no default for immEpochInfo"
+    , immHashInfo    = error "no default for immHashInfo"
     , immValidation  = error "no default for immValidation"
     , immIsEBB       = error "no default for immIsEBB"
     , immTracer      = nullTracer
@@ -170,7 +174,7 @@ openDB ImmDbArgs{..} = do
                immHasFS
                immErr
                immEpochInfo
-               (error "immHashInfo") -- TODO
+               immHashInfo
                immValidation
                parser
                immTracer

@@ -73,6 +73,7 @@ withImmDB k = do
       , immEncodeHash  = nodeEncodeHeaderHash (Proxy @ByronBlock)
       , immEncodeBlock = nodeEncodeBlockWithInfo testCfg
       , immEpochInfo   = epochInfo
+      , immHashInfo    = nodeHashInfo (Proxy @ByronBlock)
       , immValidation  = ValidateMostRecentEpoch
       , immIsEBB       = nodeIsEBB
       , immTracer      = nullTracer

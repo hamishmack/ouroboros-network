@@ -1203,6 +1203,7 @@ mkArgs cfg initLedger tracer registry
       -- Integration
     , cdbNodeConfig       = cfg
     , cdbEpochInfo        = fixedSizeEpochInfo fixedEpochSize
+    , cdbHashInfo         = testHashInfo
     , cdbIsEBB            = testBlockEpochNoIfEBB fixedEpochSize
     , cdbGenesis          = return initLedger
 

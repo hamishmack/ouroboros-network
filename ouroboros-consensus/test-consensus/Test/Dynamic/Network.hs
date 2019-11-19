@@ -263,6 +263,7 @@ runNodeNetwork registry testBtime numCoreNodes nodeJoinPlan nodeTopology
           -- Integration
         , cdbNodeConfig       = cfg
         , cdbEpochInfo        = epochInfo
+        , cdbHashInfo         = nodeHashInfo (Proxy @blk)
         , cdbIsEBB            = nodeIsEBB
         , cdbGenesis          = return initLedger
         -- Misc

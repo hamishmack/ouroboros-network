@@ -30,7 +30,7 @@ import           Ouroboros.Consensus.Mempool
 import           Ouroboros.Consensus.Protocol.Abstract
 
 import           Ouroboros.Storage.Common (EpochNo, EpochSize)
-import           Ouroboros.Storage.ImmutableDB (BinaryInfo (..))
+import           Ouroboros.Storage.ImmutableDB (BinaryInfo (..), HashInfo)
 
 class (ProtocolLedgerView blk, ApplyTx blk) => RunNode blk where
 
@@ -59,6 +59,8 @@ class (ProtocolLedgerView blk, ApplyTx blk) => RunNode blk where
   nodeProtocolMagicId     :: Proxy blk
                           -> NodeConfig (BlockProtocol blk)
                           -> ProtocolMagicId
+  nodeHashInfo            :: Proxy blk
+                          -> HashInfo (HeaderHash blk)
 
   -- Encoders
   nodeEncodeBlockWithInfo :: NodeConfig (BlockProtocol blk) -> blk -> BinaryInfo Encoding

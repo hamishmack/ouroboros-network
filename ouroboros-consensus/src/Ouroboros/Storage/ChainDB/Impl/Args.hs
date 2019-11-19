@@ -33,7 +33,8 @@ import           Ouroboros.Storage.FS.API
 import           Ouroboros.Storage.Util.ErrorHandling (ErrorHandling,
                      ThrowCantCatch)
 
-import           Ouroboros.Storage.ChainDB.Impl.ImmDB (BinaryInfo (..))
+import           Ouroboros.Storage.ChainDB.Impl.ImmDB (BinaryInfo (..),
+                     HashInfo (..))
 import qualified Ouroboros.Storage.ChainDB.Impl.ImmDB as ImmDB
 import qualified Ouroboros.Storage.ChainDB.Impl.LgrDB as LgrDB
 import           Ouroboros.Storage.ChainDB.Impl.Types (TraceEvent (..))
@@ -76,6 +77,7 @@ data ChainDbArgs m blk = forall h1 h2 h3. ChainDbArgs {
       -- Integration
     , cdbNodeConfig       :: NodeConfig (BlockProtocol blk)
     , cdbEpochInfo        :: EpochInfo m
+    , cdbHashInfo         :: HashInfo (HeaderHash blk)
     , cdbIsEBB            :: blk -> Maybe EpochNo
     , cdbGenesis          :: m (ExtLedgerState blk)
 
@@ -138,6 +140,7 @@ fromChainDbArgs ChainDbArgs{..} = (
         , immEncodeBlock      = cdbEncodeBlock
         , immErr              = cdbErrImmDb
         , immEpochInfo        = cdbEpochInfo
+        , immHashInfo         = cdbHashInfo
         , immValidation       = cdbValidation
         , immIsEBB            = cdbIsEBB
         , immHasFS            = cdbHasFSImmDb
@@ -212,6 +215,7 @@ toChainDbArgs ImmDB.ImmDbArgs{..}
       -- Integration
     , cdbNodeConfig       = lgrNodeConfig
     , cdbEpochInfo        = immEpochInfo
+    , cdbHashInfo         = immHashInfo
     , cdbIsEBB            = immIsEBB
     , cdbGenesis          = lgrGenesis
       -- Misc

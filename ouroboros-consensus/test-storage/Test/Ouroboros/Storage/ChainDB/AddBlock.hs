@@ -36,7 +36,7 @@ import           Ouroboros.Storage.ChainDB (ChainDbArgs (..),
 import qualified Ouroboros.Storage.ChainDB as ChainDB
 import           Ouroboros.Storage.Common (EpochSize (..))
 import           Ouroboros.Storage.EpochInfo (fixedSizeEpochInfo)
-import           Ouroboros.Storage.ImmutableDB (BinaryInfo (..),
+import           Ouroboros.Storage.ImmutableDB (BinaryInfo (..), HashInfo (..),
                      ValidationPolicy (ValidateAllEpochs))
 import           Ouroboros.Storage.LedgerDB.DiskPolicy (defaultDiskPolicy)
 import           Ouroboros.Storage.LedgerDB.InMemory (ledgerDbDefaultParams)
@@ -103,6 +103,8 @@ prop_addBlock_multiple_threads bpt =
   where
     blks = blocks bpt
 
+    hashInfo = testHashInfo (map tbHash blks)
+
     actualChain :: Chain TestBlock
     trace       :: [TraceAddBlockEvent TestBlock]
     (actualChain, trace) = run $ do
@@ -112,7 +114,7 @@ prop_addBlock_multiple_threads bpt =
           <*> uncheckedNewTVarM Mock.empty
           <*> uncheckedNewTVarM Mock.empty
         withRegistry $ \registry -> do
-          let args = mkArgs cfg initLedger dynamicTracer registry fsVars
+          let args = mkArgs cfg initLedger dynamicTracer registry hashInfo fsVars
           db <- openDB args
           -- Add blocks concurrently
           mapConcurrently_ (mapM_ (addBlock db)) $ blocksPerThread bpt
@@ -222,10 +224,11 @@ mkArgs :: IOLike m
        -> ExtLedgerState TestBlock
        -> Tracer m (ChainDB.TraceEvent TestBlock)
        -> ResourceRegistry m
+       -> HashInfo TestHash
        -> (StrictTVar m MockFS, StrictTVar m MockFS, StrictTVar m MockFS)
           -- ^ ImmutableDB, VolatileDB, LedgerDB
        -> ChainDbArgs m TestBlock
-mkArgs cfg initLedger tracer registry
+mkArgs cfg initLedger tracer registry hashInfo
        (immDbFsVar, volDbFsVar, lgrDbFsVar) = ChainDbArgs
     { -- Decoders
       cdbDecodeHash       = decode
@@ -258,6 +261,7 @@ mkArgs cfg initLedger tracer registry
       -- Integration
     , cdbNodeConfig       = cfg
     , cdbEpochInfo        = fixedSizeEpochInfo fixedEpochSize
+    , cdbHashInfo         = hashInfo
     , cdbIsEBB            = const Nothing
     , cdbGenesis          = return initLedger
 

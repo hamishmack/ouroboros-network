@@ -215,6 +215,7 @@ validateChainDb dbDir cfg onlyImmDB verbose =
           -- Integration
         , ChainDB.cdbNodeConfig = pInfoConfig byronProtocolInfo
         , ChainDB.cdbEpochInfo = fixedSizeEpochInfo . EpochSize . unEpochSlots $ epochSlots
+        , ChainDB.cdbHashInfo = Byron.byronHashInfo
         , ChainDB.cdbIsEBB = \blk -> case Byron.byronBlockRaw blk of
             CC.ABOBBlock _      -> Nothing
             CC.ABOBBoundary ebb -> Just

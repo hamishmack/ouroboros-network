@@ -49,6 +49,8 @@ instance ( ProtocolLedgerView (SimpleBlock SimpleMockCrypto ext)
   nodeNetworkMagic        = \_ _ -> NetworkMagic 0x0000ffff
 
   nodeProtocolMagicId     = \_ _ -> ProtocolMagicId 0
+  nodeHashInfo            = const simpleBlockHashInfo
+
 
   nodeEncodeBlockWithInfo = const simpleBlockBinaryInfo
   nodeEncodeHeader        = const encode
