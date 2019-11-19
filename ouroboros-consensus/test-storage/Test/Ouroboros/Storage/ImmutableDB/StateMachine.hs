@@ -83,7 +83,7 @@ import qualified Ouroboros.Storage.ImmutableDB as ImmDB
 import qualified Ouroboros.Storage.ImmutableDB.Impl as ImmDB (Internal (..))
 import           Ouroboros.Storage.ImmutableDB.Impl.Util (renderFile, tryImmDB)
 import           Ouroboros.Storage.ImmutableDB.Layout
-import           Ouroboros.Storage.ImmutableDB.Parser (epochFileParser')
+import           Ouroboros.Storage.ImmutableDB.Parser (epochFileParser)
 import qualified Ouroboros.Storage.Util.ErrorHandling as EH
 
 import           Test.Util.FS.Sim.Error (Errors, mkSimErrorHasFS, withErrors)
@@ -1245,7 +1245,7 @@ prop_sequential = forAllCommands smUnused Nothing $ \cmds -> QC.monadicIO $ do
                   , Property
                   )
         test fsVar errorsVar hasFS = do
-          let parser = epochFileParser' hasFS (const <$> decode) isEBB getBinaryInfo
+          let parser = epochFileParser hasFS (const <$> decode) isEBB getBinaryInfo
           (tracer, getTrace) <- QC.run recordingTracerIORef
           (db, internal) <- QC.run $ openDBInternal hasFS EH.monadCatch
             (fixedSizeEpochInfo fixedEpochSize) testHashInfo

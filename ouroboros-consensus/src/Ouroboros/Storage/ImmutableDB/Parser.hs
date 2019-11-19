@@ -53,7 +53,7 @@ data EpochFileError hash =
 
 type BlockInfo hash = BinaryInfo (hash, WithOrigin hash, CRC, BlockOrEBB)
 
-epochFileParser
+epochFileParser'
   :: forall m blk hash h. (IOLike m, Eq hash)
   => (blk -> SlotNo)
   -> (blk -> hash)
@@ -66,8 +66,8 @@ epochFileParser
        (EpochFileError hash)
        m
        (Secondary.Entry hash, WithOrigin hash)
-epochFileParser getSlotNo getHash getPrevHash
-                hasFS decodeBlock isEBB getBinaryInfo = EpochFileParser $
+epochFileParser' getSlotNo getHash getPrevHash
+                 hasFS decodeBlock isEBB getBinaryInfo = EpochFileParser $
       fmap (checkIfHashesLineUp . first (fmap extractEntry))
     . Util.CBOR.readIncrementalOffsets hasFS decoder
   where
@@ -129,8 +129,8 @@ epochFileParser getSlotNo getHash getPrevHash
           , blockOrEBB
           }
 
--- | A version of 'epochFileParser' for blocks that implement 'HasHeader'.
-epochFileParser'
+-- | A version of 'epochFileParser'' for blocks that implement 'HasHeader'.
+epochFileParser
   :: forall m blk h. (IOLike m, HasHeader blk)
   => HasFS m h
   -> (forall s. Decoder s (BL.ByteString -> blk))
@@ -140,8 +140,8 @@ epochFileParser'
        (EpochFileError (HeaderHash blk))
        m
        (Secondary.Entry (HeaderHash blk), WithOrigin (HeaderHash blk))
-epochFileParser' =
-    epochFileParser blockSlot blockHash (convertPrevHash . blockPrevHash)
+epochFileParser =
+    epochFileParser' blockSlot blockHash (convertPrevHash . blockPrevHash)
   where
     convertPrevHash :: ChainHash blk -> WithOrigin (HeaderHash blk)
     convertPrevHash GenesisHash   = Origin
