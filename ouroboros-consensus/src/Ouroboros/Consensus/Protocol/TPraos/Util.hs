@@ -13,6 +13,10 @@ import Slot (Slot(..))
 convertSlot :: SlotNo -> Slot
 convertSlot (SlotNo n) = Slot $ fromIntegral n
 
+convertSlotWithOrigin :: WithOrigin SlotNo -> Slot
+convertSlotWithOrigin (At n) = convertSlot n
+convertSlotWithOrigin Origin = Slot 0
+
 -- | Convert a cardano-ledger-specs `Slot` to an ouroboros-consensus `SlotNo`.
 convertSlotNo :: Slot -> SlotNo
 convertSlotNo (Slot n) = SlotNo $ fromIntegral n
