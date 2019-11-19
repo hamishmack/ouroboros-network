@@ -37,6 +37,7 @@ import           Network.Mux.Interface
 import           Network.Mux.Egress  as Egress
 import           Network.Mux.Ingress as Ingress
 import           Network.Mux.Types
+import           Network.Mux.Trace
 
 
 -- | muxStart starts a mux bearer for the specified protocols corresponding to

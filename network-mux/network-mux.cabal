@@ -45,6 +45,7 @@ library
                        Network.Mux.Interface
                        Network.Mux.Time
                        Network.Mux.Types
+                       Network.Mux.Trace
                        Network.Mux.Bearer.Pipe
                        Network.Mux.Bearer.Queues
                        Network.Mux.Bearer.Socket
@@ -62,6 +63,7 @@ test-suite test-network-mux
                        Network.Mux.Interface
                        Network.Mux.Time
                        Network.Mux.Types
+                       Network.Mux.Trace
                        Network.Mux.Bearer.Pipe
                        Network.Mux.Bearer.Queues
                        Network.Mux.Bearer.Socket
