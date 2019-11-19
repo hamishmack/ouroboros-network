@@ -90,6 +90,8 @@ import qualified Cardano.Chain.ValidationMode as CC
 -- NOTE: NO dependencies on ouroboros-network or ouroboros-consensus here!
 -- This stuff could/should eventually be moved to cardano-ledger.
 
+import System.IO.Unsafe
+
 {-------------------------------------------------------------------------------
   Extract info from genesis config
 -------------------------------------------------------------------------------}
@@ -224,13 +226,25 @@ validateBody validationMode block bodyEnv bodyState =
     flip runReaderT validationMode $
       CC.updateBody bodyEnv bodyState block
 
+traceToExternalLog :: CC.ChainValidationState
+                   -> CC.ABlock ByteString
+                   -> a -> a
+traceToExternalLog state block a = unsafePerformIO $ do
+    appendFile "/tmp/ledger.log" $ concat [
+        "******* VALIDATING BLOCK ******"
+      , show state
+      , show block
+      ]
+    return a
+
+
 validateBlock :: MonadError CC.ChainValidationError m
               => Gen.Config
               -> CC.ValidationMode
               -> CC.ABlock ByteString
               -> CC.HeaderHash
               -> CC.ChainValidationState -> m CC.ChainValidationState
-validateBlock cfg validationMode block blkHash state = do
+validateBlock cfg validationMode block blkHash state = traceToExternalLog state block $ do
 
     -- TODO: How come this check isn't done in 'updateBlock'
     -- (but it /is/ done in 'updateChainBoundary')?
